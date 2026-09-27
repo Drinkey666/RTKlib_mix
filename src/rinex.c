@@ -1875,7 +1875,7 @@ extern int init_rnxctr(rnxctr_t *rnx)
 
     if (!(rnx->obs.data=(obsd_t *)malloc(sizeof(obsd_t)*MAXOBS   ))||
         !(rnx->nav.eph =(eph_t  *)malloc(sizeof(eph_t )*MAXSAT*2 ))||
-        !(rnx->nav.geph=(geph_t *)malloc(sizeof(geph_t)*NSATGLO  ))||
+        !(rnx->nav.geph=(geph_t *)malloc(sizeof(geph_t)*(NSATGLO>0?NSATGLO:1)))||
         !(rnx->nav.seph=(seph_t *)malloc(sizeof(seph_t)*NSATSBS*2))) {
         free_rnxctr(rnx);
         return 0;

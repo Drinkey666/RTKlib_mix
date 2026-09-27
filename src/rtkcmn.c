@@ -1,4 +1,4 @@
-/*------------------------------------------------------------------------------
+﻿/*------------------------------------------------------------------------------
 * rtkcmn.c : rtklib common functions
 *
 *          Copyright (C) 2007-2020 by T.TAKASU, All rights reserved.
@@ -3258,7 +3258,7 @@ extern void freeobs(obs_t *obs)
 *                               (0x01: gps/qzs ephemeris, 0x02: glonass ephemeris,
 *                                0x04: sbas ephemeris,    0x08: precise ephemeris,
 *                                0x10: precise clock      0x20: almanac,
-*                                0x40: tec data)
+ *                                0x40: tec data, 0x80: code OSB data)
 * return : none
 *-----------------------------------------------------------------------------*/
 extern void freenav(nav_t *nav, int opt)
@@ -3270,6 +3270,7 @@ extern void freenav(nav_t *nav, int opt)
     if (opt&0x10) {free(nav->pclk); nav->pclk=NULL; nav->nc=nav->ncmax=0;}
     if (opt&0x20) {free(nav->alm ); nav->alm =NULL; nav->na=nav->namax=0;}
     if (opt&0x40) {free(nav->tec ); nav->tec =NULL; nav->nt=nav->ntmax=0;}
+    if (opt&0x80) {free(nav->osbs); nav->osbs=NULL; nav->nosb=nav->nosbmax=0;}
 }
 
 /* execute command -------------------------------------------------------------
@@ -4144,5 +4145,4 @@ extern int rtk_uncompress(const char *file, char *uncfile)
     return stat;
 }
 /* dummy application functions for shared library ----------------------------*/
-
 

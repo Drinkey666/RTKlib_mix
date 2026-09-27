@@ -259,6 +259,7 @@ extern double geoidh(const double *pos)
         return 0.0;
     }
     return h;
+
 }
 /*------------------------------------------------------------------------------
 * embedded geoid model

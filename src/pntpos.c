@@ -1,4 +1,4 @@
-/*------------------------------------------------------------------------------
+﻿/*------------------------------------------------------------------------------
 * pntpos.c : standard positioning
 *
 *          Copyright (C) 2007-2020 by T.TAKASU, All rights reserved.
@@ -26,6 +26,8 @@
 *-----------------------------------------------------------------------------*/
 #include "rtklib.h"
 
+/* Smartphone PPP V3.2: UTF-8, MSVC /TC compatible, no variable-length arrays. */
+
 /* constants/macros ----------------------------------------------------------*/
 
 #define SQR(x)      ((x)*(x))
@@ -47,155 +49,219 @@
 #define MIN_EL      (5.0*D2R)   /* min elevation for measurement error (rad) */
 # define MAX_GDOP   30          /* max gdop for valid solution  */
 
-/* pseudorange measurement error variance ------------------------------------*/
-static double varerr(const prcopt_t *opt, const ssat_t *ssat, const obsd_t *obs, double el, int sys)
+/* pseudorange measurement error variance 计算单颗卫星的伪距误差方差------------------------------------*/
+static double varerr(const prcopt_t* opt, const obsd_t* obs, double el, int sys)
 {
-    double fact=1.0,varr,snr_rover;
+    double fact = 1.0, varr, snr_rover;
 
+    // 1. 根据不同卫星系统赋予不同的基础误差放大因子
     switch (sys) {
-        case SYS_GPS: fact *= EFACT_GPS; break;
-        case SYS_GLO: fact *= EFACT_GLO; break;
-        case SYS_SBS: fact *= EFACT_SBS; break;
-        case SYS_CMP: fact *= EFACT_CMP; break;
-        case SYS_QZS: fact *= EFACT_QZS; break;
-        case SYS_IRN: fact *= EFACT_IRN; break;
-        default:      fact *= EFACT_GPS; break;
+    case SYS_GPS: fact *= EFACT_GPS; break;
+    case SYS_GLO: fact *= EFACT_GLO; break;
+    case SYS_GAL: fact *= EFACT_GAL; break;
+    case SYS_SBS: fact *= EFACT_SBS; break;
+    case SYS_CMP: fact *= EFACT_CMP; break;
+    case SYS_QZS: fact *= EFACT_QZS; break;
+    case SYS_IRN: fact *= EFACT_IRN; break;
+    default:      fact *= EFACT_GPS; break;
     }
-    if (el<MIN_EL) el=MIN_EL;
-    /* var = R^2*(a^2 + (b^2/sin(el) + c^2*(10^(0.1*(snr_max-snr_rover)))) + (d*rcv_std)^2) */
-    varr=SQR(opt->err[1])+SQR(opt->err[2])/sin(el);
-    if (opt->err[6]>0.0) {  /* if snr term not zero */
-        snr_rover=(ssat)?SNR_UNIT*ssat->snr_rover[0]:opt->err[5];
-        varr+=SQR(opt->err[6])*pow(10,0.1*MAX(opt->err[5]-snr_rover,0));
+
+    // 2. 物理极限保护：限制最小高度角，防止除以零或无穷大
+    if (el < MIN_EL) el = MIN_EL;
+
+    // 3. 核心数学模型：计算基础方差
+    // var = a^2 + b^2 / sin(el)  (a为常数误差，b为随高度角变化的误差)
+    varr = SQR(opt->err[1]) + SQR(opt->err[2]) / sin(el);
+
+    // 4. 信噪比(SNR)惩罚项 (极其适合手机数据！)
+    if (opt->err[6] > 0.0) {  /* 如果配置了信噪比相关项 */
+        snr_rover = obs->SNR[0] > 0 ? SNR_UNIT * obs->SNR[0] : opt->err[5];
+        // 惩罚指数衰减：当实际信噪比低于理想最大值时，误差按指数级急剧放大
+        varr += SQR(opt->err[6]) * pow(10, 0.1 * MAX(opt->err[5] - snr_rover, 0));
     }
-    varr*=SQR(opt->eratio[0]);
-    if (opt->err[7]>0.0) {
-        varr+=SQR(opt->err[7]*0.01*(1<<(obs->Pstd[0]+5)));  /* 0.01*2^(n+5) m */
+
+    // 5. 伪距/相位权重比例尺乘数 (比如手机配置 opt->eratio[0] = 400，就会在这里把方差放大几万倍)
+    varr *= SQR(opt->eratio[0]);
+
+    if (opt->err[7] > 0.0) {
+        varr += SQR(opt->err[7] * 0.01 * (1 << (obs->Pstd[0] + 5)));  /* 引入接收机自带的伪距标准差指标 */
     }
-    if (opt->ionoopt==IONOOPT_IFLC) varr*=SQR(3.0); /* iono-free */
-    return SQR(fact)*varr;
+
+    // 6. 无电离层组合(IF)的毒性：IF组合会将原本的噪声放大 3 倍左右！
+    if (opt->ionoopt == IONOOPT_IFLC) varr *= SQR(3.0); /* iono-free */
+
+    return SQR(fact) * varr;
 }
-/* get group delay parameter (m) ---------------------------------------------*/
-static double gettgd(int sat, const nav_t *nav, int type)
+/* get group delay parameter (m) 提取卫星的硬件延迟 ---------------------------------------------*/
+static double gettgd(int sat, const nav_t* nav, int type)
 {
-    int i,sys=satsys(sat,NULL);
-    
-    if (sys==SYS_GLO) {
-        for (i=0;i<nav->ng;i++) {
-            if (nav->geph[i].sat==sat) break;
+    int i, sys = satsys(sat, NULL);
+
+    // 1. GLONASS 系统的频分多址(FDMA)处理逻辑较为特殊
+    if (sys == SYS_GLO) {
+        for (i = 0; i < nav->ng; i++) {
+            if (nav->geph[i].sat == sat) break; // 在广播星历中找到这颗卫星
         }
-        return (i>=nav->ng)?0.0:-nav->geph[i].dtaun*CLIGHT;
+        // 返回 dtaun 参数并乘以光速 CLIGHT，将时间延迟转换为距离误差(米)
+        return (i >= nav->ng) ? 0.0 : -nav->geph[i].dtaun * CLIGHT;
     }
     else {
-        for (i=0;i<nav->n;i++) {
-            if (nav->eph[i].sat==sat) break;
+        // 2. 其他系统 (GPS, Galileo, BDS等)
+        for (i = 0; i < nav->n; i++) {
+            if (nav->eph[i].sat == sat) break; // 查找对应星历
         }
-        return (i>=nav->n)?0.0:nav->eph[i].tgd[type]*CLIGHT;
+        // 返回星历中记录的 TGD 参数，乘以光速转化为米
+        return (i >= nav->n) ? 0.0 : nav->eph[i].tgd[type] * CLIGHT;
     }
 }
-/* test SNR mask -------------------------------------------------------------*/
-static int snrmask(const obsd_t *obs, const double *azel, const prcopt_t *opt)
+/* test SNR mask 信噪比门限测试-------------------------------------------------------------*/
+static int snrmask(const obsd_t* obs, const double* azel, const prcopt_t* opt)
 {
     int f2;
 
-    if (testsnr(0,0,azel[1],obs->SNR[0]*SNR_UNIT,&opt->snrmask)) {
-        return 0;
+    // 1. 检查第一频点 (通常是 L1) 是否通过了高度角和信噪比的双重掩码测试
+    if (testsnr(0, 0, azel[1], obs->SNR[0] * SNR_UNIT, &opt->snrmask)) {
+        return 0; // 测试未通过，返回 0 (不可用)
     }
-    if (opt->ionoopt==IONOOPT_IFLC) {
-        f2=seliflc(opt->nf,satsys(obs->sat,NULL));
-        if (testsnr(0,f2,azel[1],obs->SNR[f2]*SNR_UNIT,&opt->snrmask)) return 0;
-    }
-    return 1;
-}
-/* iono-free or "pseudo iono-free" pseudorange with code bias correction -----*/
-static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
-                     double *var)
-{
-    double P1,P2,gamma,b1,b2;
-    int sat,sys,f2,bias_ix;
 
-    sat=obs->sat;
-    sys=satsys(sat,NULL);
-    P1=obs->P[0];
-    f2=seliflc(opt->nf,satsys(obs->sat,NULL));
-    P2=obs->P[f2];
-    *var=0.0;
-    
-    if (P1==0.0||(opt->ionoopt==IONOOPT_IFLC&&P2==0.0)) return 0.0;
-    bias_ix=code2bias_ix(sys,obs->code[0]);  /* L1 code bias */
-    if (bias_ix>0) { /* 0=ref code */
-        P1+=nav->cbias[sat-1][0][bias_ix-1];
+    // 2. 如果开启了双频无电离层组合 (IFLC)
+    if (opt->ionoopt == IONOOPT_IFLC) {
+        f2 = seliflc(opt->nf, satsys(obs->sat, NULL)); // 找到第二频点的索引 (比如 L2 或 L5)
+        // 既然要做双频组合，第二频点的信号也必须及格，否则整个卫星弃用
+        if (testsnr(0, f2, azel[1], obs->SNR[f2] * SNR_UNIT, &opt->snrmask)) return 0;
     }
-    /* GPS code biases are L1/L2, Galileo are L1/L5 */
-    if (sys==SYS_GAL&&f2==1) {
-        /* skip code bias, no GAL L2 bias available */
+    return 1; // 全部通过，返回 1 (可用)
+}
+/* iono-free or "pseudo iono-free" pseudorange with code bias correction 生成修正后的伪距 (-----*/
+static double prange(const obsd_t* obs, const nav_t* nav, const prcopt_t* opt, double* var)
+{
+    double P1, P2, gamma, b1, b2;
+    int sat, sys, f2, bias_ix, osb1 = 0, osb2 = 0;
+
+    sat = obs->sat;
+    sys = satsys(sat, NULL);
+    P1 = obs->P[0]; // 获取第一频点原始伪距
+    f2 = seliflc(opt->nf, satsys(obs->sat, NULL)); // 决定第二频点用什么(L2还是L5)
+    P2 = obs->P[f2]; // 获取第二频点原始伪距
+    *var = 0.0;
+
+    // 如果观测值缺失，直接返回 0
+    if (P1 == 0.0 || (opt->ionoopt == IONOOPT_IFLC && P2 == 0.0)) return 0.0;
+
+    // ==============================================
+    // 步骤一：卫星端硬件延迟/码偏差 (Code Bias) 修正
+    // ==============================================
+    /* Bias-SINEX absolute OSB has priority over legacy relative DCB.
+       Sign convention: corrected code = observed code - OSB. */
+    if (obs->code[0] > CODE_NONE && obs->code[0] <= MAXCODE &&
+        nav->osb_valid[sat - 1][obs->code[0]]) {
+        P1 -= nav->osb[sat - 1][obs->code[0]];
+        osb1 = 1;
     }
-    else {  /* apply L2 or L5 code bias */
-        bias_ix=code2bias_ix(sys,obs->code[f2]);
-        if (bias_ix>0) { /* 0=ref code */
-            P2+=nav->cbias[sat-1][1][bias_ix-1]; /* L2 or L5 code bias */
-        }
+    else {
+        bias_ix = code2bias_ix(sys, obs->code[0]);
+        if (bias_ix > 0 && bias_ix <= MAX_CODE_BIASES)
+            P1 += nav->cbias[sat - 1][0][bias_ix - 1];
     }
-    if (opt->ionoopt==IONOOPT_IFLC) { /* dual-frequency */
-        
-        if (sys==SYS_GPS||sys==SYS_QZS) { /* L1-L2 or L1-L5 */
-            gamma=f2==1?SQR(FREQL1/FREQL2):SQR(FREQL1/FREQL5);
-            return (P2-gamma*P1)/(1.0-gamma);
-        }
-        else if (sys==SYS_GLO) { /* G1-G2 or G1-G3 */
-            gamma=f2==1?SQR(FREQ1_GLO/FREQ2_GLO):SQR(FREQ1_GLO/FREQ3_GLO);
-            return (P2-gamma*P1)/(1.0-gamma);
-        }
-        else if (sys==SYS_GAL) { /* E1-E5b, E1-E5a */
-            gamma=f2==1?SQR(FREQL1/FREQE5b):SQR(FREQL1/FREQL5);
-            if (f2==1&&getseleph(SYS_GAL)) { /* F/NAV */
-                P2-=gettgd(sat,nav,0)-gettgd(sat,nav,1); /* BGD_E5aE5b */
+
+    if (f2 >= 0 && f2 < NFREQ && obs->code[f2] > CODE_NONE &&
+        obs->code[f2] <= MAXCODE && nav->osb_valid[sat - 1][obs->code[f2]]) {
+        P2 -= nav->osb[sat - 1][obs->code[f2]];
+        osb2 = 1;
+    }
+    else if (f2 >= 0 && f2 < MAX_CODE_BIAS_FREQS) {
+        bias_ix = code2bias_ix(sys, obs->code[f2]);
+        if (bias_ix > 0 && bias_ix <= MAX_CODE_BIASES)
+            P2 += nav->cbias[sat - 1][f2][bias_ix - 1];
+    }
+
+    // ==============================================
+    // 步骤二：构建无电离层组合 (Dual-frequency Iono-Free)
+    // ==============================================
+    if (opt->ionoopt == IONOOPT_IFLC) {
+
+        /* With two absolute OSBs, form IF directly from the corrected native
+           codes. Broadcast TGD/BGD must not be applied a second time. */
+        if (osb1 && osb2) {
+            double f1hz = sat2freq(sat, obs->code[0], nav);
+            double f2hz = sat2freq(sat, obs->code[f2], nav);
+            if (f1hz > 0.0 && f2hz > 0.0 && fabs(f1hz - f2hz) > 1.0) {
+                gamma = SQR(f1hz / f2hz);
+                return (P2 - gamma * P1) / (1.0 - gamma);
             }
-            return (P2-gamma*P1)/(1.0-gamma);
         }
-        else if (sys==SYS_CMP) { /* B1-B2 */
-            gamma=SQR(((obs->code[0]==CODE_L2I)?FREQ1_CMP:FREQL1)/FREQ2_CMP);
-            if      (obs->code[0]==CODE_L2I) b1=gettgd(sat,nav,0); /* TGD_B1I */
-            else if (obs->code[0]==CODE_L1P) b1=gettgd(sat,nav,2); /* TGD_B1Cp */
-            else b1=gettgd(sat,nav,2)+gettgd(sat,nav,4); /* TGD_B1Cp+ISC_B1Cd */
-            b2=gettgd(sat,nav,1); /* TGD_B2I/B2bI (m) */
-            return ((P2-gamma*P1)-(b2-gamma*b1))/(1.0-gamma);
+
+        if (sys == SYS_GPS || sys == SYS_QZS) { /* GPS 和 QZSS 系统 */
+            // gamma 是频率平方比值：(f1 / f2)^2
+            gamma = f2 == 1 ? SQR(FREQL1 / FREQL2) : SQR(FREQL1 / FREQL5);
+            // 核心公式：IF组合伪距 = (P2 - gamma*P1) / (1 - gamma)
+            // 这样组合出来的伪距，其电离层延迟项会被完全抵消
+            return (P2 - gamma * P1) / (1.0 - gamma);
         }
-        else if (sys==SYS_IRN) { /* L5-S */
-            gamma=SQR(FREQL5/FREQs);
-            return (P2-gamma*P1)/(1.0-gamma);
+        else if (sys == SYS_GLO) { /* GLONASS 系统 (频率稍有不同) */
+            gamma = f2 == 1 ? SQR(FREQ1_GLO / FREQ2_GLO) : SQR(FREQ1_GLO / FREQ3_GLO);
+            return (P2 - gamma * P1) / (1.0 - gamma);
         }
-    }
-    else { /* single-freq (L1/E1/B1) */
-        *var=SQR(ERR_CBIAS);
-        
-        if (sys==SYS_GPS||sys==SYS_QZS) { /* L1 */
-            b1=gettgd(sat,nav,0); /* TGD (m) */
-            return P1-b1;
+        else if (sys == SYS_GAL) { /* Galileo 系统 */
+            gamma = f2 == 1 ? SQR(FREQL1 / FREQE5b) : SQR(FREQL1 / FREQL5);
+            if (f2 == 1 && getseleph(SYS_GAL)) {
+                P2 -= gettgd(sat, nav, 0) - gettgd(sat, nav, 1); // 伽利略特有的BGD组延迟修正
+            }
+            return (P2 - gamma * P1) / (1.0 - gamma);
         }
-        else if (sys==SYS_GLO) { /* G1 */
-            gamma=SQR(FREQ1_GLO/FREQ2_GLO);
-            b1=gettgd(sat,nav,0); /* -dtaun (m) */
-            return P1-b1/(gamma-1.0);
+        else if (sys == SYS_CMP) { /* 北斗系统 (BDS) */
+            // 北斗的频率和 TGD/ISC 修正非常复杂，需要严格区分信号频段
+            gamma = SQR(((obs->code[0] == CODE_L2I) ? FREQ1_CMP : FREQL1) / FREQ2_CMP);
+            if (obs->code[0] == CODE_L2I) b1 = gettgd(sat, nav, 0);
+            else if (obs->code[0] == CODE_L1P) b1 = gettgd(sat, nav, 2);
+            else b1 = gettgd(sat, nav, 2) + gettgd(sat, nav, 4);
+            b2 = gettgd(sat, nav, 1);
+            // 组合公式同样消除了电离层，并补偿了北斗特有的 TGD/ISC 延迟
+            return ((P2 - gamma * P1) - (b2 - gamma * b1)) / (1.0 - gamma);
         }
-        else if (sys==SYS_GAL) { /* E1 */
-            if (getseleph(SYS_GAL)) b1=gettgd(sat,nav,0); /* BGD_E1E5a */
-            else                    b1=gettgd(sat,nav,1); /* BGD_E1E5b */
-            return P1-b1;
-        }
-        else if (sys==SYS_CMP) { /* B1I/B1Cp/B1Cd */
-            if      (obs->code[0]==CODE_L2I) b1=gettgd(sat,nav,0); /* TGD_B1I */
-            else if (obs->code[0]==CODE_L1P) b1=gettgd(sat,nav,2); /* TGD_B1Cp */
-            else b1=gettgd(sat,nav,2)+gettgd(sat,nav,4); /* TGD_B1Cp+ISC_B1Cd */
-            return P1-b1;
-        }
-        else if (sys==SYS_IRN) { /* L5 */
-            gamma=SQR(FREQs/FREQL5);
-            b1=gettgd(sat,nav,0); /* TGD (m) */
-            return P1-gamma*b1;
+        else if (sys == SYS_IRN) { /* NavIC 系统 */
+            gamma = SQR(FREQL5 / FREQs);
+            return (P2 - gamma * P1) / (1.0 - gamma);
         }
     }
-    return P1;
+    // ==============================================
+    // 步骤三：单频解算 (Single-frequency) 处理
+    // ==============================================
+    else {
+        *var = SQR(ERR_CBIAS);
+
+        /* Absolute OSB is clock-datum consistent; do not apply broadcast
+           TGD/BGD again to that already corrected code observable. */
+        if (osb1) return P1; // 赋予一个默认的码偏差方差
+
+        // 单频无法抵消电离层，只能减去星历中播发的 TGD (时间群延迟)
+        if (sys == SYS_GPS || sys == SYS_QZS) {
+            b1 = gettgd(sat, nav, 0);
+            return P1 - b1; // 单频伪距 - TGD修正
+        }
+        else if (sys == SYS_GLO) {
+            gamma = SQR(FREQ1_GLO / FREQ2_GLO);
+            b1 = gettgd(sat, nav, 0);
+            return P1 - b1 / (gamma - 1.0);
+        }
+        else if (sys == SYS_GAL) {
+            if (getseleph(SYS_GAL)) b1 = gettgd(sat, nav, 0);
+            else                    b1 = gettgd(sat, nav, 1);
+            return P1 - b1;
+        }
+        else if (sys == SYS_CMP) {
+            if (obs->code[0] == CODE_L2I) b1 = gettgd(sat, nav, 0);
+            else if (obs->code[0] == CODE_L1P) b1 = gettgd(sat, nav, 2);
+            else b1 = gettgd(sat, nav, 2) + gettgd(sat, nav, 4);
+            return P1 - b1;
+        }
+        else if (sys == SYS_IRN) {
+            gamma = SQR(FREQs / FREQL5);
+            b1 = gettgd(sat, nav, 0);
+            return P1 - gamma * b1;
+        }
+    }
+    return P1; // 最终兜底防错，返回原始伪距
 }
 /* ionospheric correction ------------------------------------------------------
 * compute ionospheric correction
@@ -209,40 +275,48 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
 *          double *var      O   ionospheric delay (L1) variance (m^2)
 * return : status(1:ok,0:error)
 *-----------------------------------------------------------------------------*/
-extern int ionocorr(gtime_t time, const nav_t *nav, int sat, const double *pos,
-                    const double *azel, int ionoopt, double *ion, double *var)
+extern int ionocorr(gtime_t time, const nav_t* nav, int sat, const double* pos,
+    const double* azel, int ionoopt, double* ion, double* var)
 {
-    int err=0;
-
+    int err = 0;
     char tstr[40];
-    trace(4,"ionocorr: time=%s opt=%d sat=%2d pos=%.3f %.3f azel=%.3f %.3f\n",
-          time2str(time,tstr,3),ionoopt,sat,pos[0]*R2D,pos[1]*R2D,azel[0]*R2D,
-          azel[1]*R2D);
-    
-    /* SBAS ionosphere model */
-    if (ionoopt==IONOOPT_SBAS) {
-        if (sbsioncorr(time,nav,pos,azel,ion,var)) return 1;
-        err=1;
+
+    // 打印调试信息
+    trace(4, "ionocorr: time=%s opt=%d sat=%2d pos=%.3f %.3f azel=%.3f %.3f\n",
+        time2str(time, tstr, 3), ionoopt, sat, pos[0] * R2D, pos[1] * R2D, azel[0] * R2D,
+        azel[1] * R2D);
+
+    /* 1. SBAS (星基增强系统) 电离层模型 */
+    if (ionoopt == IONOOPT_SBAS) {
+        if (sbsioncorr(time, nav, pos, azel, ion, var)) return 1;
+        err = 1; // 如果 SBAS 数据不可用，标记错误并降级处理
     }
-    /* IONEX TEC model */
-    if (ionoopt==IONOOPT_TEC) {
-        if (iontec(time,nav,pos,azel,1,ion,var)) return 1;
-        err=1;
+
+    /* 2. IONEX TEC 格网模型 (PPP 最常用) */
+    // 如果你加载了 .26i 这类文件，就会走这里，精度很高
+    if (ionoopt == IONOOPT_TEC) {
+        if (iontec(time, nav, pos, azel, 1, ion, var)) return 1;
+        err = 1;
     }
-    /* QZSS broadcast ionosphere model */
-    if (ionoopt==IONOOPT_QZS&&norm(nav->ion_qzs,8)>0.0) {
-        *ion=ionmodel(time,nav->ion_qzs,pos,azel);
-        *var=SQR(*ion*ERR_BRDCI);
+
+    /* 3. QZSS 广播电离层模型 (日本准天顶系统特有) */
+    if (ionoopt == IONOOPT_QZS && norm(nav->ion_qzs, 8) > 0.0) {
+        *ion = ionmodel(time, nav->ion_qzs, pos, azel);
+        *var = SQR(*ion * ERR_BRDCI);
         return 1;
     }
-    /* GPS broadcast ionosphere model */
-    if (ionoopt==IONOOPT_BRDC||err==1) {
-        *ion=ionmodel(time,nav->ion_gps,pos,azel);
-        *var=SQR(*ion*ERR_BRDCI);
+
+    /* 4. GPS 广播电离层模型 (Klobuchar 模型) */
+    // 这是单点定位最常见的保底方案。如果前面高级模型失败 (err==1)，也会退化到这里
+    if (ionoopt == IONOOPT_BRDC || err == 1) {
+        *ion = ionmodel(time, nav->ion_gps, pos, azel);
+        *var = SQR(*ion * ERR_BRDCI); // 广播星历电离层方差通常较大
         return 1;
     }
-    *ion=0.0;
-    *var=ionoopt==IONOOPT_OFF?SQR(ERR_ION):0.0;
+
+    /* 5. 关闭电离层改正 (或者使用双频无电离层组合时，直接设为0) */
+    *ion = 0.0;
+    *var = ionoopt == IONOOPT_OFF ? SQR(ERR_ION) : 0.0;
     return 1;
 }
 /* tropospheric correction -----------------------------------------------------
@@ -256,229 +330,251 @@ extern int ionocorr(gtime_t time, const nav_t *nav, int sat, const double *pos,
 *          double *var      O   tropospheric delay variance (m^2)
 * return : status(1:ok,0:error)
 *-----------------------------------------------------------------------------*/
-extern int tropcorr(gtime_t time, const nav_t *nav, const double *pos,
-                    const double *azel, int tropopt, double *trp, double *var)
+extern int tropcorr(gtime_t time, const nav_t* nav, const double* pos,
+    const double* azel, int tropopt, double* trp, double* var)
 {
     char tstr[40];
-    trace(4,"tropcorr: time=%s opt=%d pos=%.3f %.3f azel=%.3f %.3f\n",
-          time2str(time,tstr,3),tropopt,pos[0]*R2D,pos[1]*R2D,azel[0]*R2D,
-          azel[1]*R2D);
-    
-    /* Saastamoinen model */
-    if (tropopt==TROPOPT_SAAS||tropopt==TROPOPT_EST||tropopt==TROPOPT_ESTG) {
-        *trp=tropmodel(time,pos,azel,REL_HUMI);
-        *var=SQR(ERR_SAAS/(sin(azel[1])+0.1));
+    trace(4, "tropcorr: time=%s opt=%d pos=%.3f %.3f azel=%.3f %.3f\n",
+        time2str(time, tstr, 3), tropopt, pos[0] * R2D, pos[1] * R2D, azel[0] * R2D,
+        azel[1] * R2D);
+
+    /* 1. Saastamoinen 经验模型 (GNSS 界的绝对主流) */
+    // 无论是单点定位(SAAS)还是PPP估计(EST/ESTG)，初始保底延迟都用此模型计算
+    if (tropopt == TROPOPT_SAAS || tropopt == TROPOPT_EST || tropopt == TROPOPT_ESTG) {
+        *trp = tropmodel(time, pos, azel, REL_HUMI); // 使用标准大气参数计算
+        *var = SQR(ERR_SAAS / (sin(azel[1]) + 0.1));  // 仰角越低，通过的大气越厚，方差越大
         return 1;
     }
-    /* SBAS (MOPS) troposphere model */
-    if (tropopt==TROPOPT_SBAS) {
-        *trp=sbstropcorr(time,pos,azel,var);
+
+    /* 2. SBAS 对流层模型 */
+    if (tropopt == TROPOPT_SBAS) {
+        *trp = sbstropcorr(time, pos, azel, var);
         return 1;
     }
-    /* no correction */
-    *trp=0.0;
-    *var=tropopt==TROPOPT_OFF?SQR(ERR_TROP):0.0;
+
+    /* 3. 关闭对流层改正 */
+    *trp = 0.0;
+    *var = tropopt == TROPOPT_OFF ? SQR(ERR_TROP) : 0.0;
     return 1;
 }
 /* pseudorange residuals -----------------------------------------------------*/
-static int rescode(int iter, const obsd_t *obs, int n, const double *rs,
-                   const double *dts, const double *vare, const int *svh,
-                   const nav_t *nav, const double *x, const prcopt_t *opt,
-                   const ssat_t *ssat, double *v, double *H, double *var,
-                   double *azel, int *vsat, double *resp, int *ns)
+/* pseudorange residuals -----------------------------------------------------*/
+static int rescode(int iter, const obsd_t* obs, int n, const double* rs,
+    const double* dts, const double* vare, const int* svh,
+    const nav_t* nav, const double* x, const prcopt_t* opt,
+    const ssat_t* ssat, double* v, double* H, double* var,
+    double* azel, int* vsat, double* resp, int* ns)
 {
     gtime_t time;
-    double r,freq,dion=0.0,dtrp=0.0,vmeas,vion=0.0,vtrp=0.0,rr[3],pos[3],dtr,e[3],P;
-    int i,j,nv=0,sat,sys,mask[NX-3]={0};
+    double r, freq, dion = 0.0, dtrp = 0.0, vmeas, vion = 0.0, vtrp = 0.0, rr[3], pos[3], dtr, e[3], P;
+    int i, j, nv = 0, sat, sys, mask[NX - 3] = { 0 };
 
-    for (i=0;i<3;i++) rr[i]=x[i];
-    dtr=x[3];
-    
-    ecef2pos(rr,pos);
-    trace(3,"rescode: rr=%.3f %.3f %.3f\n",rr[0], rr[1], rr[2]);
-    
-    for (i=*ns=0;i<n&&i<MAXOBS;i++) {
-        vsat[i]=0; azel[i*2]=azel[1+i*2]=resp[i]=0.0;
-        time=obs[i].time;
-        sat=obs[i].sat;
-        if (!(sys=satsys(sat,NULL))) continue;
-        
-        /* reject duplicated observation data */
-        if (i<n-1&&i<MAXOBS-1&&sat==obs[i+1].sat) {
-            char tstr[40];
-            trace(2,"duplicated obs data %s sat=%d\n",time2str(time,tstr,3),sat);
-            i++;
-            continue;
+    // 1. 提取当前估计的接收机位置 (x, y, z) 和接收机钟差 dtr
+    for (i = 0; i < 3; i++) rr[i] = x[i];
+    dtr = x[3]; // x[3] 通常存放 GPS 系统的接收机钟差
+
+    ecef2pos(rr, pos); // 将空间直角坐标 (XYZ) 转换为大地坐标 (经纬高)，用于算大气
+    trace(3, "rescode: rr=%.3f %.3f %.3f\n", rr[0], rr[1], rr[2]);
+
+    // 2. 开始遍历当前历元接收到的所有卫星观测值
+    for (i = *ns = 0; i < n && i < MAXOBS; i++) {
+        vsat[i] = 0; azel[i * 2] = azel[1 + i * 2] = resp[i] = 0.0;
+        time = obs[i].time;
+        sat = obs[i].sat;
+        if (!(sys = satsys(sat, NULL))) continue; // 识别卫星所属系统 (GPS, BDS 等)
+
+        /* 剔除重复的观测数据 */
+        if (i < n - 1 && i < MAXOBS - 1 && sat == obs[i + 1].sat) {
+            i++; continue;
         }
-        /* excluded satellite? */
-        if (satexclude(sat,vare[i],svh[i],opt)) continue;
-        
-        /* geometric distance and elevation mask*/
-        if ((r=geodist(rs+i*6,rr,e))<=0.0) continue;
-        if (satazel(pos,e,azel+i*2)<opt->elmin) continue;
-        
-        if (iter>0) {
-            /* test SNR mask */
-            if (!snrmask(obs+i,azel+i*2,opt)) continue;
-        
-            /* ionospheric correction */
-            if (!ionocorr(time,nav,sat,pos,azel+i*2,opt->ionoopt,&dion,&vion)) {
-                continue;
-            }
-            if ((freq=sat2freq(sat,obs[i].code[0],nav))==0.0) continue;
-            /* Convert from FREQL1 to freq */
-            dion*=SQR(FREQL1/freq);
-            vion*=SQR(SQR(FREQL1/freq));
-        
-            /* tropospheric correction */
-            if (!tropcorr(time,nav,pos,azel+i*2,opt->tropopt,&dtrp,&vtrp)) {
-                continue;
-            }
+
+        /* 剔除被用户手动排除或健康状态(svh)异常的卫星 */
+        if (satexclude(sat, vare[i], svh[i], opt)) continue;
+
+        /* 3. 计算接收机到卫星的真实几何距离 r，并获取视线向量 e */
+        if ((r = geodist(rs + i * 6, rr, e)) <= 0.0) continue;
+        /* 计算并测试高度角掩码 (低于设置的 elmin 则剔除) */
+        if (satazel(pos, e, azel + i * 2) < opt->elmin) continue;
+
+        // 如果是第二次及以后的迭代 (iter>0)，才开始计算复杂大气模型
+        if (iter > 0) {
+            /* 测试信噪比掩码 (上一轮讲过的 SNR 过滤) */
+            if (!snrmask(obs + i, azel + i * 2, opt)) continue;
+
+            /* 计算电离层延迟 (调用刚刚的 ionocorr 函数) */
+            if (!ionocorr(time, nav, sat, pos, azel + i * 2, opt->ionoopt, &dion, &vion)) continue;
+
+            /* 频率转换：底层模型通常算的是 L1 频点延迟，需根据当前频点换算 */
+            if ((freq = sat2freq(sat, obs[i].code[0], nav)) == 0.0) continue;
+            dion *= SQR(FREQL1 / freq);
+            vion *= SQR(SQR(FREQL1 / freq));
+
+            /* 计算对流层延迟 (调用刚刚的 tropcorr 函数) */
+            if (!tropcorr(time, nav, pos, azel + i * 2, opt->tropopt, &dtrp, &vtrp)) continue;
         }
-        /* pseudorange with code bias correction */
-        if ((P=prange(obs+i,nav,opt,&vmeas))==0.0) continue;
-        
-        /* pseudorange residual */
-        v[nv]=P-(r+dtr-CLIGHT*dts[i*2]+dion+dtrp);
-        trace(4,"sat=%d: v=%.3f P=%.3f r=%.3f dtr=%.6f dts=%.6f dion=%.3f dtrp=%.3f\n",
-            sat,v[nv],P,r,dtr,dts[i*2],dion,dtrp);
-        
-        /* design matrix */
-        for (j=0;j<NX;j++) {
-            H[j+nv*NX]=j<3?-e[j]:(j==3?1.0:0.0);
+
+        /* 4. 提取伪距 P，并应用硬件延迟偏差(Code Bias)修正 (调用你之前问过的 prange) */
+        if ((P = prange(obs + i, nav, opt, &vmeas)) == 0.0) continue;
+
+        /* 5. 核心：计算伪距残差 v (OMC: 观测值 - 计算值) */
+        // P: 测量伪距
+        // r: 几何距离, dtr: 接收机钟差, dts: 卫星钟差(已乘光速), dion: 电离层, dtrp: 对流层
+        v[nv] = P - (r + dtr - CLIGHT * dts[i * 2] + dion + dtrp);
+
+        /* 6. 构建设计矩阵 H (偏导数矩阵，用于最小二乘或滤波的增益更新) */
+        // 前三个元素是位置的偏导数 (视线向量的反方向)
+        for (j = 0; j < NX; j++) {
+            H[j + nv * NX] = j < 3 ? -e[j] : (j == 3 ? 1.0 : 0.0); // 第4个元素对应GPS钟差，偏导为1
         }
-        /* time system offset and receiver bias correction */
-        if      (sys==SYS_GLO) {v[nv]-=x[4]; H[4+nv*NX]=1.0; mask[1]=1;}
-        else if (sys==SYS_GAL) {v[nv]-=x[5]; H[5+nv*NX]=1.0; mask[2]=1;}
-        else if (sys==SYS_CMP) {v[nv]-=x[6]; H[6+nv*NX]=1.0; mask[3]=1;}
-        else if (sys==SYS_IRN) {v[nv]-=x[7]; H[7+nv*NX]=1.0; mask[4]=1;}
+
+        /* 7. 处理多系统间的系统时间偏差 (ISB, Inter-System Bias) */
+        // 由于不同卫星系统的时间基准不同，接收机需要为 GLONASS, Galileo, BeiDou 额外估计一个相对于 GPS 的钟差
+        if (sys == SYS_GLO) { v[nv] -= x[4]; H[4 + nv * NX] = 1.0; mask[1] = 1; }
+        else if (sys == SYS_GAL) { v[nv] -= x[5]; H[5 + nv * NX] = 1.0; mask[2] = 1; }
+        else if (sys == SYS_CMP) { v[nv] -= x[6]; H[6 + nv * NX] = 1.0; mask[3] = 1; }
+        else if (sys == SYS_IRN) { v[nv] -= x[7]; H[7 + nv * NX] = 1.0; mask[4] = 1; }
 #ifdef QZSDT
-        else if (sys==SYS_QZS) {v[nv]-=x[8]; H[8+nv*NX]=1.0; mask[5]=1;}
+        else if (sys == SYS_QZS) { v[nv] -= x[8]; H[8 + nv * NX] = 1.0; mask[5] = 1; }
 #endif
-        else mask[0]=1;
+        else mask[0] = 1; // GPS 系统
 
-        vsat[i]=1; resp[i]=v[nv]; (*ns)++;
-        
-        /* variance of pseudorange error */
-        var[nv]=vare[i]+vmeas+vion+vtrp;
-        if (ssat)
-            var[nv++]+=varerr(opt,&ssat[i],&obs[i],azel[1+i*2],sys);
-        else
-            var[nv++]+=varerr(opt,NULL,&obs[i],azel[1+i*2],sys);
-        trace(4,"sat=%2d azel=%5.1f %4.1f res=%7.3f sig=%5.3f\n",obs[i].sat,
-              azel[i*2]*R2D,azel[1+i*2]*R2D,resp[i],sqrt(var[nv-1]));
+        vsat[i] = 1; resp[i] = v[nv]; (*ns)++; // 标记有效卫星，记录残差
+
+        /* 8. 计算该观测值的综合方差 (观测方差 + 轨道/钟方差 + 电离层方差 + 对流层方差) */
+        var[nv] = vare[i] + vmeas + vion + vtrp;
+        // 加上最底层的伪距测量噪声方差 (调用你之前问过的 varerr 函数)
+        var[nv++] += varerr(opt, &obs[i], azel[1 + i * 2], sys);
     }
-    /* constraint to avoid rank-deficient */
-    for (i=0;i<NX-3;i++) {
-        if (mask[i]) continue;
-        v[nv]=0.0;
-        for (j=0;j<NX;j++) H[j+nv*NX]=j==i+3?1.0:0.0;
-        var[nv++]=0.01;
+
+    /* 9. 约束处理以防止秩亏 (Rank-Deficient) */
+    // 比如当前历元只有 GPS 和 BDS 卫星，没有 GLONASS 卫星。
+    // 那么 GLONASS 的系统时差参数就无法估计。为了防止矩阵无法求逆导致崩溃，赋予它一个虚拟的极小方差和零残差。
+    for (i = 0; i < NX - 3; i++) {
+        if (mask[i]) continue; // 如果该系统有卫星，正常处理
+        v[nv] = 0.0;             // 虚拟残差
+        for (j = 0; j < NX; j++) H[j + nv * NX] = j == i + 3 ? 1.0 : 0.0;
+        var[nv++] = 0.01;        // 给定一个小方差约束
     }
-    return nv;
+    return nv; // 返回有效观测方程的总个数
 }
-/* validate solution ---------------------------------------------------------*/
-static int valsol(const double *azel, const int *vsat, int n,
-                  const prcopt_t *opt, const double *v, int nv, int nx,
-                  char *msg)
+/* validate solution 解算结果质量检验---------------------------------------------------------*/
+static int valsol(const double* azel, const int* vsat, int n,
+    const prcopt_t* opt, const double* v, int nv, int nx, char* msg)
 {
-    double azels[MAXOBS*2],dop[4],vv;
-    int i,ns;
-    
-    trace(3,"valsol  : n=%d nv=%d\n",n,nv);
-    
-    /* Chi-square validation of residuals */
-    vv=dot(v,v,nv);
-    if (nv>nx&&vv>chisqr[nv-nx-1]) {
-        sprintf(msg,"Warning: large chi-square error nv=%d vv=%.1f cs=%.1f",nv,vv,chisqr[nv-nx-1]);
-        /* return 0; */ /* threshold too strict for all use cases, report error but continue on */
+    double azels[MAXOBS * 2], dop[4], vv;
+    int i, ns;
+
+    trace(3, "valsol  : n=%d nv=%d\n", n, nv);
+
+    /* 1. 残差的卡方 (Chi-square) 检验 */
+    vv = dot(v, v, nv); // 计算残差向量 v 的平方和 (v^T * v)
+    // nv是方程数(观测数)，nx是未知数。如果平方和大于统计学阈值 chisqr
+    if (nv > nx && vv > chisqr[nv - nx - 1]) {
+        sprintf(msg, "Warning: large chi-square error nv=%d vv=%.1f cs=%.1f", nv, vv, chisqr[nv - nx - 1]);
+        /* 手机数据残差极大，RTKLIB 源码在这里把 return 0 注释掉了，只是报警但继续使用 */
     }
-    /* large GDOP check */
-    for (i=ns=0;i<n;i++) {
-        if (!vsat[i]) continue;
-        azels[  ns*2]=azel[  i*2];
-        azels[1+ns*2]=azel[1+i*2];
+
+    /* 2. GDOP (几何精度因子) 检验 */
+    for (i = ns = 0; i < n; i++) {
+        if (!vsat[i]) continue; // 只提取参与解算的有效卫星
+        azels[ns * 2] = azel[i * 2];   // 方位角
+        azels[1 + ns * 2] = azel[1 + i * 2]; // 高度角
         ns++;
     }
-    dops(ns,azels,opt->elmin,dop);
-    if (dop[0]<=0.0||dop[0]>MAX_GDOP) {
-        sprintf(msg,"gdop error nv=%d gdop=%.1f",nv,dop[0]);
-        return 0;
+    dops(ns, azels, opt->elmin, dop); // 计算 DOP 值矩阵
+
+    // 如果几何分布极差（比如卫星排成一条线），拒接接受该结果
+    if (dop[0] <= 0.0 || dop[0] > MAX_GDOP) {
+        sprintf(msg, "gdop error nv=%d gdop=%.1f", nv, dop[0]);
+        return 0; // 检验不通过
     }
-    return 1;
+    return 1; // 质检合格
 }
-/* estimate receiver position ------------------------------------------------*/
-static int estpos(const obsd_t *obs, int n, const double *rs, const double *dts,
-                  const double *vare, const int *svh, const nav_t *nav,
-                  const prcopt_t *opt, const ssat_t *ssat, sol_t *sol, double *azel,
-                  int *vsat, double *resp, char *msg)
+/* estimate receiver position 接收机位置估计------------------------------------------------*/
+static int estpos(const obsd_t* obs, int n, const double* rs, const double* dts,
+    const double* vare, const int* svh, const nav_t* nav,
+    const prcopt_t* opt, const ssat_t* ssat, sol_t* sol, double* azel,
+    int* vsat, double* resp, char* msg)
 {
-    double x[NX]={0},dx[NX],Q[NX*NX],*v,*H,*var,sig;
-    int i,j,k,info,stat,nv,ns;
-    
-    trace(3,"estpos  : n=%d\n",n);
-    
-    v=mat(n+NX-3,1); H=mat(NX,n+NX-3); var=mat(n+NX-3,1);
-    
-    for (i=0;i<3;i++) x[i]=sol->rr[i];
+    double x[NX] = { 0 }, dx[NX], Q[NX * NX], * v, * H, * var, sig;
+    int i, j, k, info, stat, nv, ns;
 
-    for (i=0;i<MAXITR;i++) {
+    v = mat(n + NX - 3, 1); H = mat(NX, n + NX - 3); var = mat(n + NX - 3, 1);
 
-        /* pseudorange residuals (m) */
-        nv=rescode(i,obs,n,rs,dts,vare,svh,nav,x,opt,ssat,v,H,var,azel,vsat,resp,
-                   &ns);
-        
-        if (nv<NX) {
-            sprintf(msg,"lack of valid sats ns=%d",nv);
+    for (i = 0; i < 3; i++) x[i] = sol->rr[i]; // 取上一历元的位置作为迭代初值
+
+    // 开始最大 MAXITR (通常为 10) 次的最小二乘迭代
+    for (i = 0; i < MAXITR; i++) {
+
+        /* 1. 构建观测方程，获取伪距残差 v, 设计矩阵 H, 方差 var (调用之前的 rescode) */
+        nv = rescode(i, obs, n, rs, dts, vare, svh, nav, x, opt, ssat, v, H, var, azel, vsat, resp, &ns);
+
+        // 自由度检查：有效观测数必须大于未知数（通常是3个坐标+系统时差）
+        if (nv < NX) {
+            sprintf(msg, "lack of valid sats ns=%d", nv);
             break;
         }
-        /* weight by variance (lsq uses sqrt of weight */
-        for (j=0;j<nv;j++) {
-            sig=sqrt(var[j]);
-            v[j]/=sig;
-            for (k=0;k<NX;k++) H[k+j*NX]/=sig;
+
+        /* 2. 赋予权重：用方差的平方根去除 残差 v 和 矩阵 H */
+        for (j = 0; j < nv; j++) {
+            sig = sqrt(var[j]); // 标准差
+            v[j] /= sig;        // 误差大的卫星，这里除以一个大数，残差贡献变小 (降权)
+            for (k = 0; k < NX; k++) H[k + j * NX] /= sig;
         }
-        /* least square estimation */
-        if ((info=lsq(H,v,NX,nv,dx,Q))) {
-            sprintf(msg,"lsq error info=%d",info);
-            break;
+
+        /* 3. 核心数学运算：最小二乘求解 (H^T * H * dx = H^T * v) */
+        // dx 是本次迭代计算出的改正数，Q 是协方差矩阵 (用于评估精度)
+        if ((info = lsq(H, v, NX, nv, dx, Q))) {
+            sprintf(msg, "lsq error info=%d", info);
+            break; // 矩阵奇异，无法求逆
         }
-        for (j=0;j<NX;j++) {
-            x[j]+=dx[j];
-        }
-        if (norm(dx,NX)<1E-4) {
-            sol->type=0;
-            sol->time=timeadd(obs[0].time,-x[3]/CLIGHT);
-            sol->dtr[0]=x[3]/CLIGHT; /* receiver clock bias (s) */
-            sol->dtr[1]=x[4]/CLIGHT; /* GLO-GPS time offset (s) */
-            sol->dtr[2]=x[5]/CLIGHT; /* GAL-GPS time offset (s) */
-            sol->dtr[3]=x[6]/CLIGHT; /* BDS-GPS time offset (s) */
-            sol->dtr[4]=x[7]/CLIGHT; /* IRN-GPS time offset (s) */
+
+        // 更新未知数：当前状态 + 改正数
+        for (j = 0; j < NX; j++) x[j] += dx[j];
+
+        /* 4. 收敛判定 */
+        // 如果位置改正数 dx 的模长小于 1E-4 米 (0.1毫米)，认为已经找到最优解！
+        if (norm(dx, NX) < 1E-4) {
+            sol->type = 0; // 0: XYZ坐标系
+            sol->time = timeadd(obs[0].time, -x[3] / CLIGHT); // 修正接收机钟差引起的时间延迟
+
+            // 保存接收机钟差 (GPS) 及其他系统的系统间时差 (ISB)
+            sol->dtr[0] = x[3] / CLIGHT; /* GPS clock bias */
+            sol->dtr[1] = x[4] / CLIGHT; /* GLO-GPS time offset */
+            sol->dtr[2] = x[5] / CLIGHT; /* GAL-GPS time offset */
+            sol->dtr[3] = x[6] / CLIGHT; /* BDS-GPS time offset */
+            sol->dtr[4] = x[7] / CLIGHT; /* IRN-GPS time offset */
 #ifdef QZSDT
-            sol->dtr[5]=x[8]/CLIGHT; /* QZS-GPS time offset (s) */
+            sol->dtr[5] = x[8] / CLIGHT; /* QZS-GPS time offset */
+#else
+            sol->dtr[5] = 0.0;
 #endif
-            for (j=0;j<6;j++) sol->rr[j]=j<3?x[j]:0.0;
-            for (j=0;j<3;j++) sol->qr[j]=(float)Q[j+j*NX];
-            sol->qr[3]=(float)Q[1];    /* cov xy */
-            sol->qr[4]=(float)Q[2+NX]; /* cov yz */
-            sol->qr[5]=(float)Q[2];    /* cov zx */
-            sol->ns=(uint8_t)ns;
-            sol->age=sol->ratio=0.0;
-            
-            /* validate solution */
-            if ((stat=valsol(azel,vsat,n,opt,v,nv,NX,msg))) {
-                sol->stat=opt->sateph==EPHOPT_SBAS?SOLQ_SBAS:SOLQ_SINGLE;
+
+            for (j = 0; j < 6; j++) sol->rr[j] = j < 3 ? x[j] : 0.0; // 保存 XYZ 位置
+
+            /* 保存协方差 Q 阵到解结构体中，用于后续 PPP 滤波的初始方差！ */
+            sol->qr[0] = (float)Q[0];
+            sol->qr[1] = (float)Q[1 + NX];
+            sol->qr[2] = (float)Q[2 + 2 * NX];
+            sol->qr[3] = (float)Q[1];
+            sol->qr[4] = (float)Q[2 + NX];
+            sol->qr[5] = (float)Q[2];
+            sol->ns = (uint8_t)ns;
+
+            /* 5. 调用 valsol 进行质量检验 */
+            if ((stat = valsol(azel, vsat, n, opt, v, nv, NX, msg))) {
+                sol->stat = opt->sateph == EPHOPT_SBAS ? SOLQ_SBAS : SOLQ_SINGLE; // 标记为单点定位解
             }
             free(v); free(H); free(var);
-            return stat;
+            return stat; // 成功返回
         }
     }
-    if (i>=MAXITR) sprintf(msg,"iteration divergent i=%d",i);
-    
+    if (i >= MAXITR) sprintf(msg, "iteration divergent i=%d", i); // 迭代发散，未能收敛
+
     free(v); free(H); free(var);
     return 0;
 }
-/* RAIM FDE (failure detection and exclusion) -------------------------------*/
+/* RAIM FDE (failure detection and exclusion) 接收机自主完好性监测-------------------------------*/
 static int raim_fde(const obsd_t *obs, int n, const double *rs,
                     const double *dts, const double *vare, const int *svh,
                     const nav_t *nav, const prcopt_t *opt, const ssat_t *ssat, 
@@ -651,7 +747,7 @@ static void estvel(const obsd_t *obs, int n, const double *rs, const double *dts
 *          double *azel     IO  azimuth/elevation angle (rad) (NULL: no output)
 *          ssat_t *ssat     IO  satellite status              (NULL: no output)
 *          char   *msg      O   error message for error exit
-* return : status(1:ok,0:error)
+* return : status(1:ok,0:error) 总入口
 *-----------------------------------------------------------------------------*/
 extern int pntpos(const obsd_t *obs, int n, const nav_t *nav,
                   const prcopt_t *opt, sol_t *sol, double *azel, ssat_t *ssat,
@@ -684,22 +780,23 @@ extern int pntpos(const obsd_t *obs, int n, const nav_t *nav,
         for (i=0;i<n;i++)
             ssat[obs[i].sat-1].snr_rover[0]=obs[i].SNR[0];
     }
-    
+    // 如果不是纯 SPP 模式 (比如正在做 PPP 初始化)，强制使用广播星历电离层和 Saastamoinen 对流层作为底座
     if (opt_.mode!=PMODE_SINGLE) { /* for precise positioning */
         opt_.ionoopt=IONOOPT_BRDC;
         opt_.tropopt=TROPOPT_SAAS;
     }
-    /* satellite positions, velocities and clocks */
+
+    /* 步骤 2：核心动作，利用伪距估计接收机位置和钟差 */
     satposs(sol->time,obs,n,nav,opt_.sateph,rs,dts,var,svh);
     
     /* estimate receiver position and time with pseudorange */
     stat=estpos(obs,n,rs,dts,var,svh,nav,&opt_,ssat,sol,azel_,vsat,resp,msg);
     
-    /* RAIM FDE */
+    /* 步骤 3：如果开启了 RAIM 且卫星数足够，执行完好性检测剔除坏星 */
     if (!stat&&n>=6&&opt->posopt[4]) {
         stat=raim_fde(obs,n,rs,dts,var,svh,nav,&opt_,ssat,sol,azel_,vsat,resp,msg);
     }
-    /* estimate receiver velocity with Doppler */
+    /* 步骤 4：位置算成功了，利用多普勒观测值估计接收机速度 */
     if (stat) {
         estvel(obs,n,rs,dts,nav,&opt_,sol,azel_,vsat);
     }

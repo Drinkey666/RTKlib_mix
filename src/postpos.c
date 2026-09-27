@@ -1,4 +1,4 @@
-/*------------------------------------------------------------------------------
+﻿/*------------------------------------------------------------------------------
 * postpos.c : post-processing positioning
 *
 *          Copyright (C) 2007-2020 by T.TAKASU, All rights reserved.
@@ -83,590 +83,696 @@ static gtime_t invalidtm[MAXINVALIDTM]={{0}};/* invalid time marks */
 static rtcm_t rtcm;             /* rtcm control struct */
 static FILE *fp_rtcm=NULL;      /* rtcm data file pointer */
 
-/* show message and check break ----------------------------------------------*/
-static int checkbrk(const char *format, ...)
+/* =============================================================================
+ * 函数：checkbrk
+ * 功能：在处理过程中检查是否收到中断信号（如用户按下 Ctrl+C），并打印当前的
+ * 处理进度（时间戳、流动站、基准站名称）。
+ * ============================================================================= */
+ /* show message and check break ----------------------------------------------*/
+static int checkbrk(const char* format, ...)
 {
     va_list arg;
-    char buff[1024],*p=buff;
+    char buff[1024], * p = buff;
     if (!*format) return showmsg("");
-    va_start(arg,format);
-    p+=vsprintf(p,format,arg);
+    va_start(arg, format);
+    p += vsprintf(p, format, arg);
     va_end(arg);
-    if (*proc_rov&&*proc_base) sprintf(p," (%s-%s)",proc_rov,proc_base);
-    else if (*proc_rov ) sprintf(p," (%s)",proc_rov );
-    else if (*proc_base) sprintf(p," (%s)",proc_base);
+    if (*proc_rov && *proc_base) sprintf(p, " (%s-%s)", proc_rov, proc_base);
+    else if (*proc_rov) sprintf(p, " (%s)", proc_rov);
+    else if (*proc_base) sprintf(p, " (%s)", proc_base);
     return showmsg(buff);
 }
-/* Solution option to field separator ----------------------------------------*/
-/* Repeated from solution.c */
-static const char *opt2sep(const solopt_t *opt)
+
+/* =============================================================================
+ * 函数：opt2sep
+ * 功能：根据配置选项，获取输出结果文件（.pos）中的列分隔符（如空格、Tab或逗号）。
+ * ============================================================================= */
+ /* Solution option to field separator ----------------------------------------*/
+ /* Repeated from solution.c */
+static const char* opt2sep(const solopt_t* opt)
 {
     if (!*opt->sep) return " ";
-    else if (!strcmp(opt->sep,"\\t")) return "\t";
+    else if (!strcmp(opt->sep, "\\t")) return "\t";
     return opt->sep;
 }
-/* output reference position -------------------------------------------------*/
-static void outrpos(FILE *fp, const double *r, const solopt_t *opt)
+
+/* =============================================================================
+ * 函数：outrpos
+ * 功能：将基准站（Reference Station）的坐标输出到结果文件的表头中。
+ * 支持 LLH（经纬高）和 XYZ（地固空间直角坐标）两种格式。
+ * ============================================================================= */
+ /* output reference position -------------------------------------------------*/
+static void outrpos(FILE* fp, const double* r, const solopt_t* opt)
 {
-    double pos[3],dms1[3],dms2[3];
+    double pos[3], dms1[3], dms2[3];
 
-    trace(3,"outrpos :\n");
+    trace(3, "outrpos :\n");
 
-    const char *sep = opt2sep(opt);
-    if (opt->posf==SOLF_LLH||opt->posf==SOLF_ENU) {
-        ecef2pos(r,pos);
+    const char* sep = opt2sep(opt);
+    if (opt->posf == SOLF_LLH || opt->posf == SOLF_ENU) {
+        ecef2pos(r, pos);
         if (opt->degf) {
-            deg2dms(pos[0]*R2D,dms1,5);
-            deg2dms(pos[1]*R2D,dms2,5);
-            fprintf(fp,"%3.0f%s%02.0f%s%08.5f%s%4.0f%s%02.0f%s%08.5f%s%10.4f",
-                    dms1[0],sep,dms1[1],sep,dms1[2],sep,dms2[0],sep,dms2[1],
-                    sep,dms2[2],sep,pos[2]);
+            deg2dms(pos[0] * R2D, dms1, 5);
+            deg2dms(pos[1] * R2D, dms2, 5);
+            fprintf(fp, "%3.0f%s%02.0f%s%08.5f%s%4.0f%s%02.0f%s%08.5f%s%10.4f",
+                dms1[0], sep, dms1[1], sep, dms1[2], sep, dms2[0], sep, dms2[1],
+                sep, dms2[2], sep, pos[2]);
         }
         else {
-            fprintf(fp,"%13.9f%s%14.9f%s%10.4f",pos[0]*R2D,sep,pos[1]*R2D,
-                    sep,pos[2]);
+            fprintf(fp, "%13.9f%s%14.9f%s%10.4f", pos[0] * R2D, sep, pos[1] * R2D,
+                sep, pos[2]);
         }
     }
-    else if (opt->posf==SOLF_XYZ) {
-        fprintf(fp,"%14.4f%s%14.4f%s%14.4f",r[0],sep,r[1],sep,r[2]);
+    else if (opt->posf == SOLF_XYZ) {
+        fprintf(fp, "%14.4f%s%14.4f%s%14.4f", r[0], sep, r[1], sep, r[2]);
     }
 }
-/* output header -------------------------------------------------------------*/
-static void outheader(FILE *fp, const char **file, int n, const prcopt_t *popt,
-                      const solopt_t *sopt)
+
+/* =============================================================================
+ * 函数：outheader
+ * 功能：输出定位结果文件（通常是 .pos 文件）的表头（Header）。
+ * 包括程序版本、输入文件列表、起止时间、以及所有的处理选项。
+ * ============================================================================= */
+ /* output header -------------------------------------------------------------*/
+static void outheader(FILE* fp, const char** file, int n, const prcopt_t* popt,
+    const solopt_t* sopt)
 {
-    const char *s1[]={"GPST","UTC","JST"};
-    gtime_t ts,te;
-    double t1,t2;
-    int i,j,w1,w2;
-    char s2[40],s3[40];
+    const char* s1[] = { "GPST","UTC","JST" };
+    gtime_t ts, te;
+    double t1, t2;
+    int i, j, w1, w2;
+    char s2[40], s3[40];
 
-    trace(3,"outheader: n=%d\n",n);
+    trace(3, "outheader: n=%d\n", n);
 
-    if (sopt->posf==SOLF_NMEA||sopt->posf==SOLF_STAT) {
+    if (sopt->posf == SOLF_NMEA || sopt->posf == SOLF_STAT) {
         return;
     }
     if (sopt->outhead) {
         if (!*sopt->prog) {
-            fprintf(fp,"%s program   : RTKLIB ver.%s %s\n",COMMENTH,VER_RTKLIB,PATCH_LEVEL);
+            fprintf(fp, "%s program   : RTKLIB ver.%s %s\n", COMMENTH, VER_RTKLIB, PATCH_LEVEL);
         }
         else {
-            fprintf(fp,"%s program   : %s\n",COMMENTH,sopt->prog);
+            fprintf(fp, "%s program   : %s\n", COMMENTH, sopt->prog);
         }
-        for (i=0;i<n;i++) {
-            fprintf(fp,"%s inp file  : %s\n",COMMENTH,file[i]);
+        for (i = 0; i < n; i++) {
+            fprintf(fp, "%s inp file  : %s\n", COMMENTH, file[i]);
         }
-        for (i=0;i<obss.n;i++)    if (obss.data[i].rcv==1) break;
-        for (j=obss.n-1;j>=0;j--) if (obss.data[j].rcv==1) break;
-        if (j<i) {fprintf(fp,"\n%s no rover obs data\n",COMMENTH); return;}
-        ts=obss.data[i].time;
-        te=obss.data[j].time;
-        t1=time2gpst(ts,&w1);
-        t2=time2gpst(te,&w2);
-        if (sopt->times>=1) {
-            ts=gpst2utc(ts);
-            te=gpst2utc(te);
+        for (i = 0; i < obss.n; i++)    if (obss.data[i].rcv == 1) break;
+        for (j = obss.n - 1; j >= 0; j--) if (obss.data[j].rcv == 1) break;
+        if (j < i) { fprintf(fp, "\n%s no rover obs data\n", COMMENTH); return; }
+        ts = obss.data[i].time;
+        te = obss.data[j].time;
+        t1 = time2gpst(ts, &w1);
+        t2 = time2gpst(te, &w2);
+        if (sopt->times >= 1) {
+            ts = gpst2utc(ts);
+            te = gpst2utc(te);
         }
-        if (sopt->times==2) {
-            ts=timeadd(ts,9*3600.0);
-            te=timeadd(te,9*3600.0);
+        if (sopt->times == 2) {
+            ts = timeadd(ts, 9 * 3600.0);
+            te = timeadd(te, 9 * 3600.0);
         }
-        time2str(ts,s2,1);
-        time2str(te,s3,1);
-        fprintf(fp,"%s obs start : %s %s (week%04d %8.1fs)\n",COMMENTH,s2,s1[sopt->times],w1,t1);
-        fprintf(fp,"%s obs end   : %s %s (week%04d %8.1fs)\n",COMMENTH,s3,s1[sopt->times],w2,t2);
+        time2str(ts, s2, 1);
+        time2str(te, s3, 1);
+        fprintf(fp, "%s obs start : %s %s (week%04d %8.1fs)\n", COMMENTH, s2, s1[sopt->times], w1, t1);
+        fprintf(fp, "%s obs end   : %s %s (week%04d %8.1fs)\n", COMMENTH, s3, s1[sopt->times], w2, t2);
     }
     if (sopt->outopt) {
-        outprcopt(fp,popt);
+        outprcopt(fp, popt); /* 打印所有的精密处理参数配置 */
     }
-    if (PMODE_DGPS<=popt->mode&&popt->mode<=PMODE_FIXED&&popt->mode!=PMODE_MOVEB) {
-        fprintf(fp,"%s ref pos   :",COMMENTH);
-        outrpos(fp,popt->rb,sopt);
-        fprintf(fp,"\n");
+    if (PMODE_DGPS <= popt->mode && popt->mode <= PMODE_FIXED && popt->mode != PMODE_MOVEB) {
+        fprintf(fp, "%s ref pos   :", COMMENTH);
+        outrpos(fp, popt->rb, sopt);
+        fprintf(fp, "\n");
     }
-    if (sopt->outhead||sopt->outopt) fprintf(fp,"%s\n",COMMENTH);
+    if (sopt->outhead || sopt->outopt) fprintf(fp, "%s\n", COMMENTH);
 
-    outsolhead(fp,sopt);
+    outsolhead(fp, sopt); /* 打印具体的数据列名 (如 x, y, z, Q, ns, sd...) */
 }
-/* search next observation data index ----------------------------------------
-   Note *i will be advanced outside the index range of the obs data if none
-   are found. */
-static int nextobsf(const obs_t *obs, int *i, int rcv)
+
+/* =============================================================================
+ * 函数：nextobsf / nextobsb
+ * 功能：在载入的观测值结构体中，正向(forward) 或反向(backward) 寻找下一个属于
+ * 特定接收机 (rcv) 的连续观测数据段（通常即为下一个历元）。
+ * ============================================================================= */
+ /* search next observation data index ----------------------------------------
+    Note *i will be advanced outside the index range of the obs data if none
+    are found. */
+static int nextobsf(const obs_t* obs, int* i, int rcv)
 {
-    for (;*i<obs->n;(*i)++)
-        if (obs->data[*i].rcv==rcv) break;
+    /* 找到第一个匹配接收机号(rcv)的数据索引 */
+    for (; *i < obs->n; (*i)++)
+        if (obs->data[*i].rcv == rcv) break;
     int n;
-    for (n=0;*i+n<obs->n;n++) {
-        if (obs->data[*i+n].rcv!=rcv) break;
-        double tt=timediff(obs->data[*i+n].time,obs->data[*i].time);
-        if (tt>DTTOL) break;
+    /* 统计属于同一个历元（时间差小于 DTTOL）的数据条数 */
+    for (n = 0; *i + n < obs->n; n++) {
+        if (obs->data[*i + n].rcv != rcv) break;
+        double tt = timediff(obs->data[*i + n].time, obs->data[*i].time);
+        if (tt > DTTOL) break;
+    }
+    return n; /* 返回该历元包含的观测值数量 */
+}
+
+static int nextobsb(const obs_t* obs, int* i, int rcv)
+{
+    /* 反向(Backward)寻找历元的逻辑，用于后处理的双向滤波 */
+    for (; *i >= 0; (*i)--)
+        if (obs->data[*i].rcv == rcv) break;
+    int n;
+    for (n = 0; *i - n >= 0; n++) {
+        if (obs->data[*i - n].rcv != rcv) break;
+        double tt = timediff(obs->data[*i - n].time, obs->data[*i].time);
+        if (tt < -DTTOL) break;
     }
     return n;
 }
-static int nextobsb(const obs_t *obs, int *i, int rcv)
-{
-    for (;*i>=0;(*i)--)
-        if (obs->data[*i].rcv==rcv) break;
-    int n;
-    for (n=0;*i-n>=0;n++) {
-        if (obs->data[*i-n].rcv!=rcv) break;
-        double tt=timediff(obs->data[*i-n].time,obs->data[*i].time);
-        if (tt<-DTTOL) break;
-    }
-    return n;
-}
-/* update rtcm ssr correction ------------------------------------------------*/
+
+/* =============================================================================
+ * 函数：update_rtcm_ssr
+ * 功能：从 RTCM 数据流或文件中读取并更新对应当前历元的 SSR（状态空间表示）改正数。
+ * SSR 主要包含实时精密轨道、钟差及其他偏差产品，是实时 PPP 的核心。
+ * ============================================================================= */
+ /* update rtcm ssr correction ------------------------------------------------*/
 static void update_rtcm_ssr(gtime_t time)
 {
     char path[1024];
     int i;
 
     /* open or swap rtcm file */
-    reppath(rtcm_file,path,time,"","");
+    reppath(rtcm_file, path, time, "", ""); /* 处理文件名中的通配符(如按时间变化的文件名) */
 
-    if (strcmp(path,rtcm_path)) {
-        strcpy(rtcm_path,path);
+    if (strcmp(path, rtcm_path)) {
+        strcpy(rtcm_path, path);
 
         if (fp_rtcm) fclose(fp_rtcm);
-        fp_rtcm=fopen(path,"rb");
+        fp_rtcm = fopen(path, "rb");
         if (fp_rtcm) {
-            rtcm.time=time;
-            input_rtcm3f(&rtcm,fp_rtcm);
-            trace(2,"rtcm file open: %s\n",path);
+            rtcm.time = time;
+            input_rtcm3f(&rtcm, fp_rtcm);
+            trace(2, "rtcm file open: %s\n", path);
         }
     }
     if (!fp_rtcm) return;
 
-    /* read rtcm file until current time */
-    while (timediff(rtcm.time,time)<1E-3) {
-        if (input_rtcm3f(&rtcm,fp_rtcm)<-1) break;
+    /* read rtcm file until current time (读取RTCM直到时间追上当前历元时间) */
+    while (timediff(rtcm.time, time) < 1E-3) {
+        if (input_rtcm3f(&rtcm, fp_rtcm) < -1) break;
 
-        /* update ssr corrections */
-        for (i=0;i<MAXSAT;i++) {
-            if (!rtcm.ssr[i].update||
-                rtcm.ssr[i].iod[0]!=rtcm.ssr[i].iod[1]||
-                timediff(time,rtcm.ssr[i].t0[0])<-1E-3) continue;
-            navs.ssr[i]=rtcm.ssr[i];
-            rtcm.ssr[i].update=0;
+        /* update ssr corrections (将解析出的SSR数据存入全局导航数据 navs 中) */
+        for (i = 0; i < MAXSAT; i++) {
+            if (!rtcm.ssr[i].update ||
+                rtcm.ssr[i].iod[0] != rtcm.ssr[i].iod[1] ||
+                timediff(time, rtcm.ssr[i].t0[0]) < -1E-3) continue;
+            navs.ssr[i] = rtcm.ssr[i];
+            rtcm.ssr[i].update = 0;
         }
     }
 }
-/* Input obs data, navigation messages and sbas correction -------------------*/
-static int inputobs(obsd_t *obs, int solq, const prcopt_t *popt)
-{
-    trace(3,"\ninfunc  : dir=%d iobsu=%d iobsr=%d isbs=%d\n",reverse,iobsu,iobsr,isbs);
 
-    if (0<=iobsu&&iobsu<obss.n) {
+/* =============================================================================
+ * 函数：inputobs
+ * 功能：核心数据对齐与装载函数。负责将流动站（rover）和基准站（base）的观测数据
+ * 按时间精确对齐。如果配置了内插，则对基准站进行插值。同时提取 SBAS 和 SSR 改正数。
+ * ============================================================================= */
+ /* Input obs data, navigation messages and sbas correction -------------------*/
+static int inputobs(obsd_t* obs, int solq, const prcopt_t* popt)
+{
+    trace(3, "\ninfunc  : dir=%d iobsu=%d iobsr=%d isbs=%d\n", reverse, iobsu, iobsr, isbs);
+
+    /* 打印处理进度并检查中断 */
+    if (0 <= iobsu && iobsu < obss.n) {
         gtime_t time = obss.data[iobsu].time;
         settime(time);
         char tstr[40];
-        if (checkbrk("processing : %s Q=%d",time2str(time,tstr,0),solq)) {
-            aborts=1;
+        if (checkbrk("processing : %s Q=%d", time2str(time, tstr, 0), solq)) {
+            aborts = 1;
             showmsg("aborted");
             return -1;
         }
     }
-    int n=0;
+    int n = 0;
     if (!reverse) {
-        /* Input forward data */
-        int nu=nextobsf(&obss,&iobsu,1);
-        if (nu<=0) return -1;
-        for (int i=0;i<nu&&n<MAXOBS*2;i++) obs[n++]=obss.data[iobsu+i];
-        if (iobsr<obss.n) {
+        /* Input forward data (正向处理模式) */
+        int nu = nextobsf(&obss, &iobsu, 1); /* 获取流动站数据 */
+        if (nu <= 0) return -1;
+        for (int i = 0; i < nu && n < MAXOBS * 2; i++) obs[n++] = obss.data[iobsu + i];
+
+        if (iobsr < obss.n) { /* 存在基准站数据时（RTK 或 DGPS） */
             if (popt->intpref) {
                 /* For interpolation, find first base timestamp after rover timestamp */
-                int nr=nextobsf(&obss,&iobsr,2);
-                while (nr>0) {
-                    if (timediff(obss.data[iobsr].time,obss.data[iobsu].time)>-DTTOL) break;
-                    iobsr+=nr;
-                    nr=nextobsf(&obss,&iobsr,2);
+                /* 如果开启基站插值，寻找刚好在流动站时间之后的基站历元 */
+                int nr = nextobsf(&obss, &iobsr, 2);
+                while (nr > 0) {
+                    if (timediff(obss.data[iobsr].time, obss.data[iobsu].time) > -DTTOL) break;
+                    iobsr += nr;
+                    nr = nextobsf(&obss, &iobsr, 2);
                 }
-            } else {
+            }
+            else {
                 /* If not interpolating, find the closest iobsr timestamp before or after iobsu. */
-                double dt=fabs(timediff(obss.data[iobsr].time,obss.data[iobsu].time));
-                int i=iobsr,nr=nextobsf(&obss,&i,2);
-                while (nr>0) {
-                    double dt_next=fabs(timediff(obss.data[i].time,obss.data[iobsu].time));
-                    if (dt_next>dt) break;
-                    dt=dt_next;
-                    iobsr=i;
-                    i+=nr;
-                    nr=nextobsf(&obss,&i,2);
+                /* 否则寻找与流动站时间最接近的基准站历元 */
+                double dt = fabs(timediff(obss.data[iobsr].time, obss.data[iobsu].time));
+                int i = iobsr, nr = nextobsf(&obss, &i, 2);
+                while (nr > 0) {
+                    double dt_next = fabs(timediff(obss.data[i].time, obss.data[iobsu].time));
+                    if (dt_next > dt) break;
+                    dt = dt_next;
+                    iobsr = i;
+                    i += nr;
+                    nr = nextobsf(&obss, &i, 2);
                 }
             }
             /* Recalculate nr for the determined iobsr. This does not change iobsr. */
-            int nr=nextobsf(&obss,&iobsr,2);
-            for (int i=0;i<nr&&n<MAXOBS*2;i++) obs[n++]=obss.data[iobsr+i];
+            int nr = nextobsf(&obss, &iobsr, 2);
+            for (int i = 0; i < nr && n < MAXOBS * 2; i++) obs[n++] = obss.data[iobsr + i];
         }
-        iobsu+=nu;
+        iobsu += nu;
 
-        /* Update sbas corrections */
-        while (isbs<sbss.n) {
-            gtime_t time=gpst2time(sbss.msgs[isbs].week,sbss.msgs[isbs].tow);
+        /* Update sbas corrections (更新 SBAS 星基增强改正) */
+        while (isbs < sbss.n) {
+            gtime_t time = gpst2time(sbss.msgs[isbs].week, sbss.msgs[isbs].tow);
 
-            if (getbitu(sbss.msgs[isbs].msg,8,6)!=9) { /* Except for geo nav */
-                sbsupdatecorr(sbss.msgs+isbs,&navs);
+            if (getbitu(sbss.msgs[isbs].msg, 8, 6) != 9) { /* Except for geo nav */
+                sbsupdatecorr(sbss.msgs + isbs, &navs);
             }
-            if (timediff(time,obs[0].time)>-1.0-DTTOL) break;
+            if (timediff(time, obs[0].time) > -1.0 - DTTOL) break;
             isbs++;
         }
         /* Update rtcm ssr corrections */
         if (*rtcm_file) {
             update_rtcm_ssr(obs[0].time);
         }
-    } else {
-        /* Input backward data */
-        int nu=nextobsb(&obss,&iobsu,1);
-        if (nu<=0) return -1;
-        for (int i=0;i<nu&&n<MAXOBS*2;i++) obs[n++]=obss.data[iobsu-nu+1+i];
-        if (iobsr>=0) {
+    }
+    else {
+        /* Input backward data (反向处理模式，逻辑与正向类似但方向相反) */
+        int nu = nextobsb(&obss, &iobsu, 1);
+        if (nu <= 0) return -1;
+        for (int i = 0; i < nu && n < MAXOBS * 2; i++) obs[n++] = obss.data[iobsu - nu + 1 + i];
+        if (iobsr >= 0) {
             if (popt->intpref) {
                 /* For interpolation, find first base timestamp before rover timestamp */
-                int nr=nextobsb(&obss,&iobsr,2);
-                while (nr>0) {
-                  if (timediff(obss.data[iobsr].time,obss.data[iobsu].time)<DTTOL) break;
-                  iobsr-=nr;
-                  nr=nextobsb(&obss,&iobsr,2);
+                int nr = nextobsb(&obss, &iobsr, 2);
+                while (nr > 0) {
+                    if (timediff(obss.data[iobsr].time, obss.data[iobsu].time) < DTTOL) break;
+                    iobsr -= nr;
+                    nr = nextobsb(&obss, &iobsr, 2);
                 }
-            } else {
+            }
+            else {
                 /* If not interpolating, find the closest iobsr timestamp before or after iobsu. */
-                double dt=fabs(timediff(obss.data[iobsr].time,obss.data[iobsu].time));
-                int i=iobsr,nr=nextobsb(&obss,&i,2);
-                while (nr>0) {
-                    double dt_next=fabs(timediff(obss.data[i].time,obss.data[iobsu].time));
-                    if (dt_next>dt) break;
-                    dt=dt_next;
-                    iobsr=i;
-                    i-=nr;
-                    nr=nextobsb(&obss,&i,2);
+                double dt = fabs(timediff(obss.data[iobsr].time, obss.data[iobsu].time));
+                int i = iobsr, nr = nextobsb(&obss, &i, 2);
+                while (nr > 0) {
+                    double dt_next = fabs(timediff(obss.data[i].time, obss.data[iobsu].time));
+                    if (dt_next > dt) break;
+                    dt = dt_next;
+                    iobsr = i;
+                    i -= nr;
+                    nr = nextobsb(&obss, &i, 2);
                 }
             }
-            int nr=nextobsb(&obss,&iobsr,2);
-            for (int i=0;i<nr&&n<MAXOBS*2;i++) obs[n++]=obss.data[iobsr-nr+1+i];
+            int nr = nextobsb(&obss, &iobsr, 2);
+            for (int i = 0; i < nr && n < MAXOBS * 2; i++) obs[n++] = obss.data[iobsr - nr + 1 + i];
         }
-        iobsu-=nu;
+        iobsu -= nu;
 
-        /* Update sbas corrections */
-        while (isbs>=0) {
-            gtime_t time=gpst2time(sbss.msgs[isbs].week,sbss.msgs[isbs].tow);
+        /* Update sbas corrections (反向) */
+        while (isbs >= 0) {
+            gtime_t time = gpst2time(sbss.msgs[isbs].week, sbss.msgs[isbs].tow);
 
-            if (getbitu(sbss.msgs[isbs].msg,8,6)!=9) { /* Except for geo nav */
-                sbsupdatecorr(sbss.msgs+isbs,&navs);
+            if (getbitu(sbss.msgs[isbs].msg, 8, 6) != 9) { /* Except for geo nav */
+                sbsupdatecorr(sbss.msgs + isbs, &navs);
             }
-            if (timediff(time,obs[0].time)<1.0+DTTOL) break;
+            if (timediff(time, obs[0].time) < 1.0 + DTTOL) break;
             isbs--;
         }
     }
-    return n;
+    return n; /* 返回打包好的观测值总数（包含流动站+基站） */
 }
-/* output to file message of invalid time mark -------------------------------*/
-static void outinvalidtm(FILE *fptm, const solopt_t *opt, const gtime_t tm)
+
+/* =============================================================================
+ * 函数：outinvalidtm
+ * 功能：将无效的“时间标记 (Time mark, 用于无人机/相机曝光时刻匹配)”记录到文件中。
+ * ============================================================================= */
+ /* output to file message of invalid time mark -------------------------------*/
+static void outinvalidtm(FILE* fptm, const solopt_t* opt, const gtime_t tm)
 {
     gtime_t time = tm;
     double gpst;
     const double secondsInAWeek = 604800;
-    int week,timeu;
+    int week, timeu;
     char s[100];
 
-    timeu=opt->timeu<0?0:(opt->timeu>20?20:opt->timeu);
+    timeu = opt->timeu < 0 ? 0 : (opt->timeu > 20 ? 20 : opt->timeu);
 
-    if (opt->times>=TIMES_UTC) time=gpst2utc(time);
-    if (opt->times==TIMES_JST) time=timeadd(time,9*3600.0);
+    if (opt->times >= TIMES_UTC) time = gpst2utc(time);
+    if (opt->times == TIMES_JST) time = timeadd(time, 9 * 3600.0);
 
-    if (opt->timef) time2str(time,s,timeu);
+    if (opt->timef) time2str(time, s, timeu);
     else {
-        gpst=time2gpst(time,&week);
-        if (secondsInAWeek-gpst < 0.5/pow(10.0,timeu)) {
+        gpst = time2gpst(time, &week);
+        if (secondsInAWeek - gpst < 0.5 / pow(10.0, timeu)) {
             week++;
-            gpst=0.0;
+            gpst = 0.0;
         }
-        sprintf(s,"%4d   %*.*f",week,6+(timeu<=0?0:timeu+1),timeu,gpst);
+        sprintf(s, "%4d   %*.*f", week, 6 + (timeu <= 0 ? 0 : timeu + 1), timeu, gpst);
     }
-    strcat(s, "   Q=0, Time mark is not valid\n");
+    strcat(s, "   Q=0, Time mark is not valid\n"); /* Q=0代表该位置解无效 */
 
-    fwrite(s,strlen(s),1,fptm);
+    fwrite(s, strlen(s), 1, fptm);
 }
-/* fill structure sol_t for time mark ----------------------------------------*/
+
+/* =============================================================================
+ * 函数：fillsoltm
+ * 功能：利用相机快门触发(Event)前后的两个正常解算历元位置，通过线性插值算出
+ * 触发瞬间（时间标记 tm）对应的精确三维坐标。
+ * ============================================================================= */
+ /* fill structure sol_t for time mark ----------------------------------------*/
 static sol_t fillsoltm(const sol_t solold, const sol_t solnew, const gtime_t tm)
 {
-    gtime_t t1={0},t2={0};
-    sol_t sol=solold;
-    int i=0;
+    gtime_t t1 = { 0 }, t2 = { 0 };
+    sol_t sol = solold;
+    int i = 0;
 
+    /* 保留状态最差的那一个作为插值解的状态 (例如一个FIX，一个FLOAT，则结果算FLOAT) */
     if (solold.stat == 0 || solnew.stat == 0) {
         sol.stat = 0;
-    } else {
+    }
+    else {
         sol.stat = (solold.stat > solnew.stat) ? solold.stat : solnew.stat;
     }
     sol.ns = (solold.ns < solnew.ns) ? solold.ns : solnew.ns;
     sol.ratio = (solold.ratio < solnew.ratio) ? solold.ratio : solnew.ratio;
 
-    /* interpolation position and speed of time mark */
+    /* interpolation position and speed of time mark (根据时间差进行线性插值) */
     t1 = solold.time;
     t2 = solnew.time;
     sol.time = tm;
 
-    for (i=0;i<6;i++)
+    for (i = 0; i < 6; i++)
     {
-        sol.rr[i] = solold.rr[i] + timediff(tm,t1) / timediff(t2,t1) * (solnew.rr[i] - solold.rr[i]);
+        sol.rr[i] = solold.rr[i] + timediff(tm, t1) / timediff(t2, t1) * (solnew.rr[i] - solold.rr[i]);
     }
 
     return sol;
 }
 
-/* carrier-phase bias correction by ssr --------------------------------------*/
-static void corr_phase_bias_ssr(obsd_t *obs, int n, const nav_t *nav)
+/* =============================================================================
+ * 函数：corr_phase_bias_ssr
+ * 功能：应用 SSR 中的“未校准相位延迟” (FCB/Phase Bias) 改正。
+ * 这是精密单点定位实现模糊度固定（PPP-AR）的关键步骤。
+ * ============================================================================= */
+ /* carrier-phase bias correction by ssr --------------------------------------*/
+static void corr_phase_bias_ssr(obsd_t* obs, int n, const nav_t* nav)
 {
     double freq;
     uint8_t code;
-    int i,j;
+    int i, j;
 
-    for (i=0;i<n;i++) for (j=0;j<NFREQ;j++) {
-        code=obs[i].code[j];
+    for (i = 0; i < n; i++) for (j = 0; j < NFREQ; j++) {
+        code = obs[i].code[j];
 
-        if ((freq=sat2freq(obs[i].sat,code,nav))==0.0) continue;
+        if ((freq = sat2freq(obs[i].sat, code, nav)) == 0.0) continue;
 
-        /* correct phase bias (cyc) */
-        obs[i].L[j]-=nav->ssr[obs[i].sat-1].pbias[code-1]*freq/CLIGHT;
+        /* correct phase bias (cyc) (将偏差从米或纳秒转换为周 cycles，然后从相位观测值中扣除) */
+        obs[i].L[j] -= nav->ssr[obs[i].sat - 1].pbias[code - 1] * freq / CLIGHT;
     }
 }
-/* process positioning -------------------------------------------------------*/
-static void procpos(FILE *fp, FILE *fptm, const prcopt_t *popt, const solopt_t *sopt,
-                    rtk_t *rtk, int mode)
+
+/* =============================================================================
+ * 函数：procpos
+ * 功能：处理单向定位（前向滤波或后向滤波）的总调度器。
+ * 它循环调用 inputobs 获取当前历元，执行相位改正，然后调用底层的
+ * rtkpos 引擎进行卡尔曼滤波解算，最终将结果保存至文件或内存缓冲区以备后续平滑。
+ * ============================================================================= */
+ /* process positioning -------------------------------------------------------*/
+static void procpos(FILE* fp, FILE* fptm, const prcopt_t* popt, const solopt_t* sopt,
+    rtk_t* rtk, int mode)
 {
-    gtime_t time={0};
-    sol_t sol={{0}},oldsol={{0}},newsol={{0}};
-    obsd_t *obs_ptr = (obsd_t *)malloc(sizeof(obsd_t)*MAXOBS*2); /* for rover and base */
+    gtime_t time = { 0 };
+    sol_t sol = { {0} }, oldsol = { {0} }, newsol = { {0} };
+    obsd_t* obs_ptr = (obsd_t*)malloc(sizeof(obsd_t) * MAXOBS * 2); /* for rover and base (分配观测值堆内存) */
     if (obs_ptr == NULL) {
-      trace(2, "procpos: memory allocation failure\n");
-      return;
+        trace(2, "procpos: memory allocation failure\n");
+        return;
     }
-    double rb[3]={0};
-    int i,nobs,n,solstatic,num=0,pri[]={6,1,2,3,4,5,1,6};
+    double rb[3] = { 0 };
+    int i, nobs, n, solstatic, num = 0, pri[] = { 6,1,2,3,4,5,1,6 }; /* 解算质量优先级：1(FIX)优先级最高 */
 
-    trace(3,"procpos : mode=%d\n",mode); /* 0=single dir, 1=combined */
+    trace(3, "procpos : mode=%d\n", mode); /* 0=single dir, 1=combined */
 
-    solstatic=sopt->solstatic&&
-              (popt->mode==PMODE_STATIC||popt->mode==PMODE_STATIC_START||popt->mode==PMODE_PPP_STATIC);
-    
-    rtcm_path[0]='\0';
+    solstatic = sopt->solstatic &&
+        (popt->mode == PMODE_STATIC || popt->mode == PMODE_STATIC_START || popt->mode == PMODE_PPP_STATIC);
 
-    while ((nobs=inputobs(obs_ptr,rtk->sol.stat,popt))>=0) {
+    rtcm_path[0] = '\0';
 
-        /* exclude satellites */
-        for (i=n=0;i<nobs;i++) {
-            if ((satsys(obs_ptr[i].sat,NULL)&popt->navsys)&&
-                popt->exsats[obs_ptr[i].sat-1]!=1) obs_ptr[n++]= obs_ptr[i];
+    /* 进入历元主循环：每次抽取一个历元的数据进行解算 */
+    while ((nobs = inputobs(obs_ptr, rtk->sol.stat, popt)) >= 0) {
+
+        /* exclude satellites (剔除未启用或用户手动排除的卫星) */
+        for (i = n = 0; i < nobs; i++) {
+            if ((satsys(obs_ptr[i].sat, NULL) & popt->navsys) &&
+                popt->exsats[obs_ptr[i].sat - 1] != 1) obs_ptr[n++] = obs_ptr[i];
         }
-        if (n<=0) continue;
+        if (n <= 0) continue;
 
-        /* carrier-phase bias correction */
-        if (!strstr(popt->pppopt,"-ENA_FCB")) {
-            corr_phase_bias_ssr(obs_ptr,n,&navs);
+        /* carrier-phase bias correction (若配置了SSR FCB，执行相位硬件延迟改正) */
+        if (!strstr(popt->pppopt, "-ENA_FCB")) {
+            corr_phase_bias_ssr(obs_ptr, n, &navs);
         }
-        if (!rtkpos(rtk, obs_ptr,n,&navs)) {
+
+        /* 💥核心解算引擎：调用 rtkpos 执行单历元的位置、速度、钟差、模糊度估计💥 */
+        if (!rtkpos(rtk, obs_ptr, n, &navs)) {
+            /* 若解算失败，记录无效的时间标记 */
             if (rtk->sol.eventime.time != 0) {
                 if (mode == SOLMODE_SINGLE_DIR) {
                     outinvalidtm(fptm, sopt, rtk->sol.eventime);
-                } else if (!reverse&&nitm<MAXINVALIDTM) {
+                }
+                else if (!reverse && nitm < MAXINVALIDTM) {
                     invalidtm[nitm++] = rtk->sol.eventime;
                 }
             }
-            continue;
+            continue; /* 解算失败跳到下一个历元 */
         }
 
-        if (mode==SOLMODE_SINGLE_DIR) {    /* forward or backward */
+        /* 针对不同处理模式(单向、前向缓存、后向缓存)处理结果输出 */
+        if (mode == SOLMODE_SINGLE_DIR) {    /* forward or backward (普通单向模式直接写文件) */
             if (!solstatic) {
-                outsol(fp,&rtk->sol,rtk->rb,sopt);
+                outsol(fp, &rtk->sol, rtk->rb, sopt);
             }
-            else if (time.time==0||pri[rtk->sol.stat]<=pri[sol.stat]) {
-                sol=rtk->sol;
-                for (i=0;i<3;i++) rb[i]=rtk->rb[i];
-                if (time.time==0||timediff(rtk->sol.time,time)<0.0) {
-                    time=rtk->sol.time;
+            else if (time.time == 0 || pri[rtk->sol.stat] <= pri[sol.stat]) {
+                sol = rtk->sol;
+                for (i = 0; i < 3; i++) rb[i] = rtk->rb[i];
+                if (time.time == 0 || timediff(rtk->sol.time, time) < 0.0) {
+                    time = rtk->sol.time;
                 }
             }
-            /* check time mark */
+            /* check time mark (对无人机Event拍照事件进行结果插值并单独输出) */
             if (rtk->sol.eventime.time != 0)
             {
-                newsol = fillsoltm(oldsol,rtk->sol,rtk->sol.eventime);
+                newsol = fillsoltm(oldsol, rtk->sol, rtk->sol.eventime);
                 num++;
-                if (!solstatic&&mode==SOLMODE_SINGLE_DIR) {
-                    outsol(fptm,&newsol,rb,sopt);
+                if (!solstatic && mode == SOLMODE_SINGLE_DIR) {
+                    outsol(fptm, &newsol, rb, sopt);
                 }
             }
             oldsol = rtk->sol;
         }
-        else if (!reverse) { /* combined-forward */
+        else if (!reverse) { /* combined-forward (双向模式：前向处理时存入 solf 数组) */
             if (isolf >= nepoch) {
                 free(obs_ptr);
                 return;
             }
-            solf[isolf]=rtk->sol;
-            for (i=0;i<3;i++) rbf[i+isolf*3]=rtk->rb[i];
+            solf[isolf] = rtk->sol;
+            for (i = 0; i < 3; i++) rbf[i + isolf * 3] = rtk->rb[i];
             isolf++;
         }
-        else { /* combined-backward */
-            if (isolb>=nepoch) {
+        else { /* combined-backward (双向模式：后向处理时存入 solb 数组) */
+            if (isolb >= nepoch) {
                 free(obs_ptr);
                 return;
             }
-            solb[isolb]=rtk->sol;
-            for (i=0;i<3;i++) rbb[i+isolb*3]=rtk->rb[i];
+            solb[isolb] = rtk->sol;
+            for (i = 0; i < 3; i++) rbb[i + isolb * 3] = rtk->rb[i];
             isolb++;
         }
     }
-    if (mode==SOLMODE_SINGLE_DIR && solstatic&&time.time!=0.0) {
-        sol.time=time;
-        outsol(fp,&sol,rb,sopt);
+    /* 如果是静态单向模式，循环结束才输出最终最精确的那一个解 */
+    if (mode == SOLMODE_SINGLE_DIR && solstatic && time.time != 0.0) {
+        sol.time = time;
+        outsol(fp, &sol, rb, sopt);
     }
 
     free(obs_ptr); /* moved from stack to heap to kill a stack overflow warning */
 }
-/* validation of combined solutions ------------------------------------------*/
-static int valcomb(const sol_t *solf, const sol_t *solb, double *rbf,
-        double *rbb, const prcopt_t *popt)
+
+/* =============================================================================
+ * 函数：valcomb
+ * 功能：双向滤波结果质量检核。用于比较同一个时刻正向算出的坐标和反向算出的坐标。
+ * 如果偏差超过了统计方差的允许阈值，强制将模糊度FIX解降级为FLOAT浮点解。
+ * ============================================================================= */
+ /* validation of combined solutions ------------------------------------------*/
+static int valcomb(const sol_t* solf, const sol_t* solb, double* rbf,
+    double* rbb, const prcopt_t* popt)
 {
-    double dr[3],var[3];
+    double dr[3], var[3];
     int i;
     char tstr[40];
 
-    trace(4,"valcomb :\n");
+    trace(4, "valcomb :\n");
 
     /* compare forward and backward solution */
-    for (i=0;i<3;i++) {
-        dr[i]=solf->rr[i]-solb->rr[i];
-        if (popt->mode==PMODE_MOVEB) dr[i]-=(rbf[i]-rbb[i]);
-        var[i]=(double)solf->qr[i] + (double)solb->qr[i];
+    for (i = 0; i < 3; i++) {
+        dr[i] = solf->rr[i] - solb->rr[i]; /* 计算正反向结果的三维差异 */
+        if (popt->mode == PMODE_MOVEB) dr[i] -= (rbf[i] - rbb[i]);
+        var[i] = (double)solf->qr[i] + (double)solb->qr[i]; /* 合并双方方差 */
     }
-    for (i=0;i<3;i++) {
-        if (dr[i]*dr[i]<=16.0*var[i]) continue; /* ok if in 4-sigma */
+    for (i = 0; i < 3; i++) {
+        if (dr[i] * dr[i] <= 16.0 * var[i]) continue; /* ok if in 4-sigma (判断差异是否在4倍标准差内) */
 
-        time2str(solf->time,tstr,2);
-        trace(2,"degrade fix to float: %s dr=%.3f %.3f %.3f std=%.3f %.3f %.3f\n",
-              tstr+11,dr[0],dr[1],dr[2],SQRT(var[0]),SQRT(var[1]),SQRT(var[2]));
+        /* 如果超出 4-sigma，说明某一个方向的固定出现了严重错误(如假周跳固定)，立刻降级 */
+        time2str(solf->time, tstr, 2);
+        trace(2, "degrade fix to float: %s dr=%.3f %.3f %.3f std=%.3f %.3f %.3f\n",
+            tstr + 11, dr[0], dr[1], dr[2], SQRT(var[0]), SQRT(var[1]), SQRT(var[2]));
         return 0;
     }
     return 1;
 }
-/* combine forward/backward solutions and save results ---------------------*/
-static void combres(FILE *fp, FILE *fptm, const prcopt_t *popt, const solopt_t *sopt)
+
+/* =============================================================================
+ * 函数：combres
+ * 功能：双向RTS（Rauch-Tung-Striebel）平滑与组合核心函数。
+ * 利用正向滤波(solf)和反向滤波(solb)的历史记录，按照协方差加权平均的数学模型
+ * 合成一个精度极高的最优平滑解（通常能彻底压制单向滤波刚收敛时的波动）。
+ * ============================================================================= */
+ /* combine forward/backward solutions and save results ---------------------*/
+static void combres(FILE* fp, FILE* fptm, const prcopt_t* popt, const solopt_t* sopt)
 {
-    gtime_t time={0};
-    sol_t sols={{0}},sol={{0}},oldsol={{0}},newsol={{0}};
-    double tt,Qf[9],Qb[9],Qs[9],rbs[3]={0},rb[3]={0},rr_f[3],rr_b[3],rr_s[3];
-    int i,j,k,solstatic,num=0,pri[]={7,1,2,3,4,5,1,6};
+    gtime_t time = { 0 };
+    sol_t sols = { {0} }, sol = { {0} }, oldsol = { {0} }, newsol = { {0} };
+    double tt, Qf[9], Qb[9], Qs[9], rbs[3] = { 0 }, rb[3] = { 0 }, rr_f[3], rr_b[3], rr_s[3];
+    int i, j, k, solstatic, num = 0, pri[] = { 7,1,2,3,4,5,1,6 };
 
-    trace(3,"combres : isolf=%d isolb=%d\n",isolf,isolb);
+    trace(3, "combres : isolf=%d isolb=%d\n", isolf, isolb);
 
-    solstatic=sopt->solstatic&&
-              (popt->mode==PMODE_STATIC||popt->mode==PMODE_STATIC_START||popt->mode==PMODE_PPP_STATIC);
+    solstatic = sopt->solstatic &&
+        (popt->mode == PMODE_STATIC || popt->mode == PMODE_STATIC_START || popt->mode == PMODE_PPP_STATIC);
 
-    for (i=0,j=isolb-1;i<isolf&&j>=0;i++,j--) {
-        if ((tt=timediff(solf[i].time,solb[j].time))<-DTTOL) {
-            sols=solf[i];
-            for (k=0;k<3;k++) rbs[k]=rbf[k+i*3];
+    /* 循环匹配正反向数组中的历元时刻 */
+    for (i = 0, j = isolb - 1; i < isolf && j >= 0; i++, j--) {
+        if ((tt = timediff(solf[i].time, solb[j].time)) < -DTTOL) {
+            sols = solf[i]; /* 正向时间落后，单取正向 */
+            for (k = 0; k < 3; k++) rbs[k] = rbf[k + i * 3];
             j++;
         }
-        else if (tt>DTTOL) {
-            sols=solb[j];
-            for (k=0;k<3;k++) rbs[k]=rbb[k+j*3];
+        else if (tt > DTTOL) {
+            sols = solb[j]; /* 反向时间落后，单取反向 */
+            for (k = 0; k < 3; k++) rbs[k] = rbb[k + j * 3];
             i--;
         }
-        else if (pri[solf[i].stat]<pri[solb[j].stat]) {
-            sols=solf[i];
-            for (k=0;k<3;k++) rbs[k]=rbf[k+i*3];
+        /* 如果遇到单边无解情况，取存在质量更优的一边 (根据 pri 优先级数组) */
+        else if (pri[solf[i].stat] < pri[solb[j].stat]) {
+            sols = solf[i];
+            for (k = 0; k < 3; k++) rbs[k] = rbf[k + i * 3];
         }
-        else if (pri[solf[i].stat]>pri[solb[j].stat]) {
-            sols=solb[j];
-            for (k=0;k<3;k++) rbs[k]=rbb[k+j*3];
+        else if (pri[solf[i].stat] > pri[solb[j].stat]) {
+            sols = solb[j];
+            for (k = 0; k < 3; k++) rbs[k] = rbb[k + j * 3];
         }
         else {
-            sols=solf[i];
-            sols.time=timeadd(sols.time,-tt/2.0);
+            /* 关键分支：正向和反向同一历元都有解，执行加权平滑合并！ */
+            sols = solf[i];
+            sols.time = timeadd(sols.time, -tt / 2.0);
 
-            if ((popt->mode==PMODE_KINEMA||popt->mode==PMODE_MOVEB)&&
-                sols.stat==SOLQ_FIX) {
+            if ((popt->mode == PMODE_KINEMA || popt->mode == PMODE_MOVEB) &&
+                sols.stat == SOLQ_FIX) {
 
-                /* degrade fix to float if validation failed */
-                if (!valcomb(solf+i,solb+j,rbf+i*3,rbb+j*3,popt)) sols.stat=SOLQ_FLOAT;
+                /* degrade fix to float if validation failed (检核不通过则降级为浮点) */
+                if (!valcomb(solf + i, solb + j, rbf + i * 3, rbb + j * 3, popt)) sols.stat = SOLQ_FLOAT;
             }
-            for (k=0;k<3;k++) {
-                Qf[k+k*3]=solf[i].qr[k];
-                Qb[k+k*3]=solb[j].qr[k];
-            }
-            Qf[1]=Qf[3]=solf[i].qr[3];
-            Qf[5]=Qf[7]=solf[i].qr[4];
-            Qf[2]=Qf[6]=solf[i].qr[5];
-            Qb[1]=Qb[3]=solb[j].qr[3];
-            Qb[5]=Qb[7]=solb[j].qr[4];
-            Qb[2]=Qb[6]=solb[j].qr[5];
 
-            if (popt->mode==PMODE_MOVEB) {
-                for (k=0;k<3;k++) rr_f[k]=solf[i].rr[k]-rbf[k+i*3];
-                for (k=0;k<3;k++) rr_b[k]=solb[j].rr[k]-rbb[k+j*3];
-                if (smoother(rr_f,Qf,rr_b,Qb,3,rr_s,Qs)) continue;
-                for (k=0;k<3;k++) sols.rr[k]=rbs[k]+rr_s[k];
+            /* 提取正向方差矩阵 Qf 和反向方差矩阵 Qb */
+            for (k = 0; k < 3; k++) {
+                Qf[k + k * 3] = solf[i].qr[k];
+                Qb[k + k * 3] = solb[j].qr[k];
+            }
+            Qf[1] = Qf[3] = solf[i].qr[3];
+            Qf[5] = Qf[7] = solf[i].qr[4];
+            Qf[2] = Qf[6] = solf[i].qr[5];
+            Qb[1] = Qb[3] = solb[j].qr[3];
+            Qb[5] = Qb[7] = solb[j].qr[4];
+            Qb[2] = Qb[6] = solb[j].qr[5];
+
+            /* 调用 smoother 函数，基于协方差倒数（权）计算平滑坐标及平滑方差 Qs */
+            if (popt->mode == PMODE_MOVEB) {
+                for (k = 0; k < 3; k++) rr_f[k] = solf[i].rr[k] - rbf[k + i * 3];
+                for (k = 0; k < 3; k++) rr_b[k] = solb[j].rr[k] - rbb[k + j * 3];
+                if (smoother(rr_f, Qf, rr_b, Qb, 3, rr_s, Qs)) continue;
+                for (k = 0; k < 3; k++) sols.rr[k] = rbs[k] + rr_s[k];
             }
             else {
-                if (smoother(solf[i].rr,Qf,solb[j].rr,Qb,3,sols.rr,Qs)) continue;
+                if (smoother(solf[i].rr, Qf, solb[j].rr, Qb, 3, sols.rr, Qs)) continue;
             }
-            sols.qr[0]=(float)Qs[0];
-            sols.qr[1]=(float)Qs[4];
-            sols.qr[2]=(float)Qs[8];
-            sols.qr[3]=(float)Qs[1];
-            sols.qr[4]=(float)Qs[5];
-            sols.qr[5]=(float)Qs[2];
+            /* 将合并后精化过的方差存回结果中 */
+            sols.qr[0] = (float)Qs[0];
+            sols.qr[1] = (float)Qs[4];
+            sols.qr[2] = (float)Qs[8];
+            sols.qr[3] = (float)Qs[1];
+            sols.qr[4] = (float)Qs[5];
+            sols.qr[5] = (float)Qs[2];
 
-            /* smoother for velocity solution */
+            /* smoother for velocity solution (同理：对多普勒速度进行双向平滑) */
             if (popt->dynamics) {
-                for (k=0;k<3;k++) {
-                    Qf[k+k*3]=solf[i].qv[k];
-                    Qb[k+k*3]=solb[j].qv[k];
+                for (k = 0; k < 3; k++) {
+                    Qf[k + k * 3] = solf[i].qv[k];
+                    Qb[k + k * 3] = solb[j].qv[k];
                 }
-                Qf[1]=Qf[3]=solf[i].qv[3];
-                Qf[5]=Qf[7]=solf[i].qv[4];
-                Qf[2]=Qf[6]=solf[i].qv[5];
-                Qb[1]=Qb[3]=solb[j].qv[3];
-                Qb[5]=Qb[7]=solb[j].qv[4];
-                Qb[2]=Qb[6]=solb[j].qv[5];
-                if (smoother(solf[i].rr+3,Qf,solb[j].rr+3,Qb,3,sols.rr+3,Qs)) continue;
-                sols.qv[0]=(float)Qs[0];
-                sols.qv[1]=(float)Qs[4];
-                sols.qv[2]=(float)Qs[8];
-                sols.qv[3]=(float)Qs[1];
-                sols.qv[4]=(float)Qs[5];
-                sols.qv[5]=(float)Qs[2];
+                Qf[1] = Qf[3] = solf[i].qv[3];
+                Qf[5] = Qf[7] = solf[i].qv[4];
+                Qf[2] = Qf[6] = solf[i].qv[5];
+                Qb[1] = Qb[3] = solb[j].qv[3];
+                Qb[5] = Qb[7] = solb[j].qv[4];
+                Qb[2] = Qb[6] = solb[j].qv[5];
+                if (smoother(solf[i].rr + 3, Qf, solb[j].rr + 3, Qb, 3, sols.rr + 3, Qs)) continue;
+                sols.qv[0] = (float)Qs[0];
+                sols.qv[1] = (float)Qs[4];
+                sols.qv[2] = (float)Qs[8];
+                sols.qv[3] = (float)Qs[1];
+                sols.qv[4] = (float)Qs[5];
+                sols.qv[5] = (float)Qs[2];
             }
         }
+        /* 输出平滑后的解到最终的 .pos 文件中 */
         if (!solstatic) {
-            outsol(fp,&sols,rbs,sopt);
+            outsol(fp, &sols, rbs, sopt);
         }
-        else if (time.time==0||pri[sols.stat]<=pri[sol.stat]) {
-            sol=sols;
-            for (k=0;k<3;k++) rb[k]=rbs[k];
-            if (time.time==0||timediff(sols.time,time)<0.0) {
-                time=sols.time;
+        else if (time.time == 0 || pri[sols.stat] <= pri[sol.stat]) {
+            sol = sols;
+            for (k = 0; k < 3; k++) rb[k] = rbs[k];
+            if (time.time == 0 || timediff(sols.time, time) < 0.0) {
+                time = sols.time;
             }
         }
-        if (iitm < nitm && timediff(invalidtm[iitm],sols.time)<0.0)
+        /* 若该历元包含无人机拍照Event记录，对平滑结果再插值并输出至 tm 文件 */
+        if (iitm < nitm && timediff(invalidtm[iitm], sols.time) < 0.0)
         {
-            outinvalidtm(fptm,sopt,invalidtm[iitm]);
+            outinvalidtm(fptm, sopt, invalidtm[iitm]);
             iitm++;
         }
         if (sols.eventime.time != 0)
         {
-            newsol = fillsoltm(oldsol,sols,sols.eventime);
+            newsol = fillsoltm(oldsol, sols, sols.eventime);
             num++;
             if (!solstatic) {
-                outsol(fptm,&newsol,rb,sopt);
+                outsol(fptm, &newsol, rb, sopt);
             }
         }
         oldsol = sols;
     }
-    if (solstatic&&time.time!=0.0) {
-        sol.time=time;
-        outsol(fp,&sol,rb,sopt);
+    if (solstatic && time.time != 0.0) {
+        sol.time = time;
+        outsol(fp, &sol, rb, sopt);
     }
 }
 /* read prec ephemeris, sbas data, tec grid and open rtcm --------------------*/
@@ -719,6 +825,7 @@ static void freepreceph(nav_t *nav, sbs_t *sbs)
 
     free(nav->peph); nav->peph=NULL; nav->ne=nav->nemax=0;
     free(nav->pclk); nav->pclk=NULL; nav->nc=nav->ncmax=0;
+    free(nav->osbs); nav->osbs=NULL; nav->nosb=nav->nosbmax=0;
     free(sbs->msgs); sbs->msgs=NULL; sbs->n =sbs->nmax =0;
     for (i=0;i<nav->nt;i++) {
         free(nav->tec[i].data);
@@ -1119,19 +1226,32 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     /* read dcb parameters from DCB, BIA, BSX files */
     dcb_ok = 0;
     for (i=0;i<MAX_CODE_BIASES;i++) for (k=0;k<MAX_CODE_BIAS_FREQS;k++) {
-        /* FIXME: cbias later initialized with 0 in readdcb()!  */
-        for (j=0;j<MAXSAT;j++) navs.cbias[j][k][i]=-1;
-        for (j=0;j<MAXRCV;j++) navs.rbias[j][k][i]=0;
-        }
-    for (i=0;i<n;i++) {  /* first check infiles for .BIA or .BSX files */
+        for (j=0;j<MAXSAT;j++) navs.cbias[j][k][i]=0.0;
+        for (j=0;j<MAXRCV;j++) navs.rbias[j][k][i]=0.0;
+    }
+    for (j=0;j<MAXSAT;j++) for (i=0;i<=MAXCODE;i++) {
+        navs.osb[j][i]=0.0;
+        navs.osb_valid[j][i]=0;
+        navs.osb_head[j][i]=0;
+    }
+    free(navs.osbs); navs.osbs=NULL; navs.nosb=navs.nosbmax=0;
+
+    /* Only pass actual bias products to readdcb(); calling it for OBS/NAV/SP3
+       files needlessly clears the bias table on every attempt. */
+    for (i=0;i<n;i++) {
+        const char *bext=strrchr(infile[i],'.');
+        if (!bext) continue;
+        if (strcmp(bext,".BIA")&&strcmp(bext,".bia")&&
+            strcmp(bext,".BSX")&&strcmp(bext,".bsx")&&
+            strcmp(bext,".DCB")&&strcmp(bext,".dcb")) continue;
         if ((dcb_ok=readdcb(infile[i],&navs,stas))) break;
     }
-    if (!dcb_ok&&*fopt->dcb) {  /* then check if DCB file specified */
+    if (!dcb_ok&&*fopt->dcb) {
         reppath(fopt->dcb,path,ts,"","");
         dcb_ok=readdcb(path,&navs,stas);
     }
     if (!dcb_ok) {
-
+        trace(2,"warning: no usable DCB/BIA code-bias product loaded\n");
     }
     /* set antenna parameters */
     if (popt_.mode!=PMODE_SINGLE) {
@@ -1366,156 +1486,182 @@ static int execses_b(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
 /* post-processing positioning -------------------------------------------------
 * post-processing positioning
 * args   : gtime_t ts       I   processing start time (ts.time==0: no limit)
-*        : gtime_t te       I   processing end time   (te.time==0: no limit)
-*          double ti        I   processing interval  (s) (0:all)
-*          double tu        I   processing unit time (s) (0:all)
-*          prcopt_t *popt   I   processing options
-*          solopt_t *sopt   I   solution options
-*          filopt_t *fopt   I   file options
-*          char   **infile  I   input files (see below)
-*          int    n         I   number of input files
-*          char   *outfile  I   output file ("":stdout, see below)
-*          char   *rov      I   rover id list        (separated by " ")
-*          char   *base     I   base station id list (separated by " ")
+* : gtime_t te       I   processing end time   (te.time==0: no limit)
+* double ti        I   processing interval  (s) (0:all)
+* double tu        I   processing unit time (s) (0:all)
+* prcopt_t *popt   I   processing options
+* solopt_t *sopt   I   solution options
+* filopt_t *fopt   I   file options
+* char   **infile  I   input files (see below)
+* int    n         I   number of input files
+* char   *outfile  I   output file ("":stdout, see below)
+* char   *rov      I   rover id list        (separated by " ")
+* char   *base     I   base station id list (separated by " ")
 * return : status (0:ok,0>:error,1:aborted)
 * notes  : input files should contain observation data, navigation data, precise
-*          ephemeris/clock (optional), sbas log file (optional), ssr message
-*          log file (optional) and tec grid file (optional). only the first
-*          observation data file in the input files is recognized as the rover
-*          data.
+* ephemeris/clock (optional), sbas log file (optional), ssr message
+* log file (optional) and tec grid file (optional). only the first
+* observation data file in the input files is recognized as the rover
+* data.
 *
-*          the type of an input file is recognized by the file extension as ]
-*          follows:
-*              .sp3,.SP3,.eph*,.EPH*: precise ephemeris (sp3c)
-*              .sbs,.SBS,.ems,.EMS  : sbas message log files (rtklib or ems)
-*              .rtcm3,.RTCM3        : ssr message log files (rtcm3)
-*              .*i,.*I              : tec grid files (ionex)
-*              others               : rinex obs, nav, gnav, hnav, qnav or clock
+* the type of an input file is recognized by the file extension as ]
+* follows:
+* .sp3,.SP3,.eph*,.EPH*: precise ephemeris (sp3c)
+* .sbs,.SBS,.ems,.EMS  : sbas message log files (rtklib or ems)
+* .rtcm3,.RTCM3        : ssr message log files (rtcm3)
+* .*i,.*I              : tec grid files (ionex)
+* others               : rinex obs, nav, gnav, hnav, qnav or clock
 *
-*          inputs files can include wild-cards (*). if an file includes
-*          wild-cards, the wild-card expanded multiple files are used.
+* inputs files can include wild-cards (*). if an file includes
+* wild-cards, the wild-card expanded multiple files are used.
 *
-*          inputs files can include keywords. if an file includes keywords,
-*          the keywords are replaced by date, time, rover id and base station
-*          id and multiple session analyses run. refer reppath() for the
-*          keywords.
+* inputs files can include keywords. if an file includes keywords,
+* the keywords are replaced by date, time, rover id and base station
+* id and multiple session analyses run. refer reppath() for the
+* keywords.
 *
-*          the output file can also include keywords. if the output file does
-*          not include keywords. the results of all multiple session analyses
-*          are output to a single output file.
+* the output file can also include keywords. if the output file does
+* not include keywords. the results of all multiple session analyses
+* are output to a single output file.
 *
-*          ssr corrections are valid only for forward estimation.
+* ssr corrections are valid only for forward estimation.
 *-----------------------------------------------------------------------------*/
 extern int postpos(gtime_t ts, gtime_t te, double ti, double tu,
-                   const prcopt_t *popt, const solopt_t *sopt,
-                   const filopt_t *fopt, const char **infile, int n, const char *outfile,
-                   const char *rov, const char *base)
+    const prcopt_t* popt, const solopt_t* sopt,
+    const filopt_t* fopt, const char** infile, int n, const char* outfile,
+    const char* rov, const char* base)
 {
-    gtime_t tts,tte,ttte;
-    double tunit,tss;
-    int i,j,k,nf,stat=0,week,flag=1,index[MAXINFILE]={0};
-    char *ifile[MAXINFILE],ofile[1024];
-    const char *ext;
+    gtime_t tts, tte, ttte; // 定义时间变量：tts(当前处理单元起始时间), tte(当前处理单元结束时间), ttte(扩展查找文件的临时时间)
+    double tunit, tss; // 定义浮点变量：tunit(实际对齐的时间跨度单位), tss(对齐到周内的起始秒数)
+    int i, j, k, nf, stat = 0, week, flag = 1, index[MAXINFILE] = { 0 }; // 定义整型变量：nf(解析后的输入文件总数), stat(状态返回值), week(GPS周), flag(输出文件追加标志), index(输入文件的原始参数索引映射表)
+    char* ifile[MAXINFILE], ofile[1024]; // 定义字符串/指针数组：ifile(用于存放解析通配符后的真实输入文件路径), ofile(解析后的输出文件路径)
+    const char* ext; // 定义指针：用于指向文件的后缀名以判断文件类型
 
-    trace(3,"postpos : ti=%.0f tu=%.0f n=%d outfile=%s\n",ti,tu,n,outfile);
+    trace(3, "postpos : ti=%.0f tu=%.0f n=%d outfile=%s\n", ti, tu, n, outfile); // 输出跟踪日志（level 3）：记录历元间隔、单元处理时间、输入文件数量和输出文件名
 
     /* open processing session */
-    if (!openses(popt,sopt,fopt,&navs,&pcvss,&pcvsr)) return -1;
+    // 打开处理会话：这里会初始化公共数据结构，并读取通用的星历和天线相位中心文件（赋给全局变量 navs, pcvss, pcvsr）
+    if (!openses(popt, sopt, fopt, &navs, &pcvss, &pcvsr)) return -1; // 如果打开失败（如内存分配失败等），则直接返回-1报错
 
-    if (ts.time!=0&&te.time!=0&&tu>=0.0) {
-        if (timediff(te,ts)<0.0) {
-            showmsg("error : no period");
-            closeses(&navs,&pcvss,&pcvsr);
-            return 0;
+    // 第一种情况：用户指定了完整的处理起止时间(ts, te)，且处理单元时间(tu)参数有效
+    if (ts.time != 0 && te.time != 0 && tu >= 0.0) {
+        // 检查用户输入的时间合法性：如果结束时间早于开始时间
+        if (timediff(te, ts) < 0.0) {
+            showmsg("error : no period"); // 界面输出错误提示：没有有效的时间段
+            closeses(&navs, &pcvss, &pcvsr); // 释放由于调用 openses 而分配的内存
+            return 0; // 返回0（当作无效逻辑退出）
         }
-        for (i=0;i<MAXINFILE;i++) {
-            if (!(ifile[i]=(char *)malloc(1024))) {
-                for (;i>=0;i--) free(ifile[i]);
-                closeses(&navs,&pcvss,&pcvsr);
-                return -1;
+        // 为存储解析通配符后的大量输入文件路径动态分配内存空间
+        for (i = 0; i < MAXINFILE; i++) {
+            if (!(ifile[i] = (char*)malloc(1024))) { // 尝试为每个文件路径分配1024字节，如果失败：
+                for (; i >= 0; i--) free(ifile[i]); // 则将之前已经分配成功的内存全部释放，防止内存泄漏
+                closeses(&navs, &pcvss, &pcvsr); // 同时关闭处理会话
+                return -1; // 返回-1表示致命错误退出
             }
         }
-        if (tu==0.0||tu>86400.0*MAXPRCDAYS) tu=86400.0*MAXPRCDAYS;
-        settspan(ts,te);
-        tunit=tu<86400.0?tu:86400.0;
-        tss=tunit*(int)floor(time2gpst(ts,&week)/tunit);
+        // 约束 tu 的范围：如果未指定tu，或者tu超出系统设定的最大单次处理天数(MAXPRCDAYS，通常为100天)
+        if (tu == 0.0 || tu > 86400.0 * MAXPRCDAYS) tu = 86400.0 * MAXPRCDAYS; // 则将 tu 强制设为系统允许的最大天数的秒数
+        settspan(ts, te); // 设置全局跨度变量，用于某些库内部的限值
+        tunit = tu < 86400.0 ? tu : 86400.0; // 如果tu小于1天，基准对齐单位就是tu；否则用1天(86400秒)作为对齐单位
+        tss = tunit * (int)floor(time2gpst(ts, &week) / tunit); // 将起始时间转换到当前GPS周，并向下取整，将其对齐到 tunit 的整数倍，得到起算的周内秒数
 
-        for (i=0;;i++) { /* for each periods */
-            tts=gpst2time(week,tss+i*tu);
-            tte=timeadd(tts,tu-DTTOL);
-            if (timediff(tts,te)>0.0) break;
-            if (timediff(tts,ts)<0.0) tts=ts;
-            if (timediff(tte,te)>0.0) tte=te;
+        // 进入按单元时间 (tu) 分段处理的主循环，处理大时间跨度的数据
+        for (i = 0;; i++) { /* for each periods */
+            tts = gpst2time(week, tss + i * tu); // 计算当前这一小段（period）的起始时间 tts
+            tte = timeadd(tts, tu - DTTOL); // 计算当前这一小段的结束时间 tte (减去一个小小的容差值 DTTOL，防止由于浮点精度导致跨界到下一个区间)
+            if (timediff(tts, te) > 0.0) break; // 如果当前处理段的开始时间已经超过了用户要求的总结束时间 te，则跳出分段循环
+            if (timediff(tts, ts) < 0.0) tts = ts; // （通常发生在第一段）如果对齐后的时间早于要求的总起始时间，则截断，强制令 tts = ts
+            if (timediff(tte, te) > 0.0) tte = te; // （通常发生在最后一段）如果当前段结束时间超出了要求结束时间，同样做截断，令 tte = te
 
-            strcpy(proc_rov ,"");
-            strcpy(proc_base,"");
-            char tstr[40];
-            if (checkbrk("reading    : %s",time2str(tts,tstr,0))) {
-                stat=1;
-                break;
+            strcpy(proc_rov, ""); // 清空全局状态字符串：当前处理的流动站 ID
+            strcpy(proc_base, ""); // 清空全局状态字符串：当前处理的基准站 ID
+            char tstr[40]; // 临时字符串用于保存格式化后的时间
+            // 在UI/Console上检查用户是否按下了中止按钮(Ctrl+C等)，同时更新当前正在处理的时间点提示
+            if (checkbrk("reading    : %s", time2str(tts, tstr, 0))) {
+                stat = 1; // 如果用户触发了中断，令状态 stat=1 (aborted)
+                break;  // 中断分段处理循环
             }
-            for (j=k=nf=0;j<n;j++) {
+            // 开始针对当前的 tts 到 tte 时间段，匹配并展开所有输入的路径参数
+            for (j = k = nf = 0; j < n; j++) {
 
-                ext=strrchr(infile[j],'.');
+                ext = strrchr(infile[j], '.'); // 获取当前参数 infile[j] 的最后一个 '.' 的位置，提取扩展名
 
-                if (ext&&(!strcmp(ext,".rtcm3")||!strcmp(ext,".RTCM3"))) {
-                    strcpy(ifile[nf++],infile[j]);
+                // 判断是否为 RTCM3 格式的 SSR（状态空间表示）文件
+                if (ext && (!strcmp(ext, ".rtcm3") || !strcmp(ext, ".RTCM3"))) {
+                    strcpy(ifile[nf++], infile[j]); // SSR文件通常不按时间通配符展开，直接将其路径拷入 ifile 列表，并将有效文件数 nf 加 1
                 }
                 else {
                     /* include next day precise ephemeris or rinex brdc nav */
-                    ttte=tte;
-                    if (ext&&(!strcmp(ext,".sp3")||!strcmp(ext,".SP3")||
-                              !strcmp(ext,".eph")||!strcmp(ext,".EPH"))) {
-                        ttte=timeadd(ttte,3600.0);
+                    // 针对精密星历和广播星历，我们需要向后额外多取一部分时间的数据，以防止差值平滑时在边界处没有参考数据
+                    ttte = tte; // 用临时变量 ttte 保存当前段的结束时间
+                    // 如果后缀是精密星历文件(.sp3 或 .eph)
+                    if (ext && (!strcmp(ext, ".sp3") || !strcmp(ext, ".SP3") ||
+                        !strcmp(ext, ".eph") || !strcmp(ext, ".EPH"))) {
+                        ttte = timeadd(ttte, 3600.0); // 搜索星历时，在结束时间上多加1小时（3600秒）
                     }
-                    else if (strstr(infile[j],"brdc")) {
-                        ttte=timeadd(ttte,7200.0);
+                    // 如果文件名包含了 "brdc" （说明这是RINEX广播星历）
+                    else if (strstr(infile[j], "brdc")) {
+                        ttte = timeadd(ttte, 7200.0); // 广播星历更新慢，需要多加2小时（7200秒）
                     }
-                    nf+=reppaths(infile[j],ifile+nf,MAXINFILE-nf,tts,ttte,"","");
+                    // 调用核心函数 reppaths 依据时间段 [tts, ttte] 和原始路径 infile[j] 中的通配符（如%Y, *等），
+                    // 将展开后的实际物理文件路径存入 ifile。它返回成功匹配加入的文件个数，累加给 nf
+                    nf += reppaths(infile[j], ifile + nf, MAXINFILE - nf, tts, ttte, "", "");
                 }
-                while (k<nf) index[k++]=j;
+                // 为新加入的每个展开文件建立映射关系：告诉系统 ifile 中的这些文件来源于参数栏中的第 j 个输入项
+                while (k < nf) index[k++] = j;
 
-                if (nf>=MAXINFILE) {
-                    trace(2,"too many input files. trancated\n");
-                    break;
+                // 越界安全防护
+                if (nf >= MAXINFILE) {
+                    trace(2, "too many input files. trancated\n"); // 如果展开后的文件总数超过了数组上限，打印警告
+                    break; // 跳出文件展开循环，截断多余文件
                 }
             }
-            if (!reppath(outfile,ofile,tts,"","")&&i>0) flag=0;
+            // 针对输出文件名的通配符进行替换（例如根据当前时间的年份、天数等替换输出名中的占位符）。
+            // 如果输出名不包含时间通配符（reppath返回0），意味着不同时间段的解算要写在同一个文件里，
+            // 且这不是第一次循环(i>0)，那么把 flag 设为0 (0代表追加写入，1代表覆盖新建)。
+            if (!reppath(outfile, ofile, tts, "", "") && i > 0) flag = 0;
 
             /* execute processing session */
-            stat=execses_b(tts,tte,ti,popt,sopt,fopt,flag,(const char **)ifile,index,nf,(const char *)ofile,
-                           rov,base);
+            // 核心解算入口：将当前时间段[tts, tte]，解析好的文件 ifile 列表传给底层的 execses_b 批处理核心执行具体的定位解算
+            stat = execses_b(tts, tte, ti, popt, sopt, fopt, flag, (const char**)ifile, index, nf, (const char*)ofile,
+                rov, base);
 
-            if (stat==1) break;
+            if (stat == 1) break; // 如果底层的解算返回 1（用户中止或出现不可恢复的异常），则直接跳出大循环
         }
-        for (i=0;i<MAXINFILE;i++) free(ifile[i]);
+        for (i = 0; i < MAXINFILE; i++) free(ifile[i]); // 所有分段循环全部结束后，释放一开始申请的巨大的文件路径缓存内存
     }
-    else if (ts.time!=0) {
-        for (i=0;i<n&&i<MAXINFILE;i++) {
-            if (!(ifile[i]=(char *)malloc(1024))) {
-                for (;i>=0;i--) free(ifile[i]);
-                return -1;
+    // 第二种情况：用户仅仅指定了开始时间 ts (但 te=0 表示无限制，tu也就无需分段了)
+    else if (ts.time != 0) {
+        for (i = 0; i < n && i < MAXINFILE; i++) {
+            if (!(ifile[i] = (char*)malloc(1024))) { // 同理，给处理后的文件路径分配内存
+                for (; i >= 0; i--) free(ifile[i]);     // 失败的话安全释放之前的分配
+                return -1; // 报错返回
             }
-            reppath(infile[i],ifile[i],ts,"","");
-            index[i]=i;
+            // 由于不考虑结束时间和分段跨越多天的问题，仅利用指定的起始时间 ts 简单地替换一次输入文件名中的通配符
+            reppath(infile[i], ifile[i], ts, "", "");
+            index[i] = i; // 不存在展开，输入参数个数等于最终使用的文件个数，索引直接对齐
         }
-        reppath(outfile,ofile,ts,"","");
+        reppath(outfile, ofile, ts, "", ""); // 替换一次输出文件名中的时间通配符
 
         /* execute processing session */
-        stat=execses_b(ts,te,ti,popt,sopt,fopt,1,(const char **)ifile,index,n,ofile,rov,
-                       base);
+        // 将整个解析好的文件列表传给批处理函数 execses_b 进行一次到底的解算，flag固定传1(新建输出)
+        stat = execses_b(ts, te, ti, popt, sopt, fopt, 1, (const char**)ifile, index, n, ofile, rov,
+            base);
 
-        for (i=0;i<n&&i<MAXINFILE;i++) free(ifile[i]);
+        for (i = 0; i < n && i < MAXINFILE; i++) free(ifile[i]); // 解算完毕后释放路径占用的内存
     }
+    // 第三种情况：没有任何时间限制，也就是开始和结束时间都没填 (ts.time==0 且 te.time==0)
     else {
-        for (i=0;i<n;i++) index[i]=i;
+        for (i = 0; i < n; i++) index[i] = i; // 不解析通配符，输入什么文件就用什么文件，所以直接构造 1对1 的索引数组
 
         /* execute processing session */
-        stat=execses_b(ts,te,ti,popt,sopt,fopt,1,infile,index,n,outfile,rov,
-                       base);
+        // 直接将原封不动的原始参数 infile 数组抛入解算核心 execses_b 中
+        stat = execses_b(ts, te, ti, popt, sopt, fopt, 1, infile, index, n, outfile, rov,
+            base);
     }
     /* close processing session */
-    closeses(&navs,&pcvss,&pcvsr);
+    // 无论从哪个分支出来（或者正常结束），最后统一调用 closeses
+    closeses(&navs, &pcvss, &pcvsr); // 释放卫星导航数据星历(navs)和天线模型数据(pcvss, pcvsr)在堆中占据的内存
 
-    return stat;
+    return stat; // 将整段程序的最终状态反馈返回给上层调用者
 }

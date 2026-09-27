@@ -1,0 +1,18 @@
+# Local Visual Studio state and compiler outputs (some older outputs are
+# already tracked; this prevents new generated files from being added).
+.vs/
+**/.vs/
+**/x64/
+**/Debug/
+**/Release/
+*.user
+*.obj
+*.pdb
+*.ilk
+*.exe
+
+# Generated replay data and Python caches.
+gnss_replay/results/
+__pycache__/
+*.pyc
+*.trace

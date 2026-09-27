@@ -1,4 +1,4 @@
-/*------------------------------------------------------------------------------
+﻿/*------------------------------------------------------------------------------
 * rtklib.h : RTKLIB constants, types and function prototypes
 *
 *          Copyright (C) 2007-2020 by T.TAKASU, All rights reserved.
@@ -30,10 +30,10 @@
 *-----------------------------------------------------------------------------*/
 #ifndef RTKLIB_H
 #define RTKLIB_H
-#ifndef WIN32
+/* Platform selection: do not force WIN32 on Linux/Android builds. */
+#if defined(_WIN32) && !defined(WIN32)
 #define WIN32
 #endif
-#define __thread
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -53,15 +53,21 @@
 extern "C" {
 #endif
 
-#ifdef _MSC_VER
+#ifndef EXPORT
 #define EXPORT
+#endif
 
-#if (__STDC_VERSION__ >= 201710L)
+/* thread-local storage specifier ------------------------------------------------
+ * MSVC uses __declspec(thread), GCC/Clang use C11 _Thread_local or __thread.
+ * Keep MSVC first because clang-cl also defines _MSC_VER.
+ * -----------------------------------------------------------------------------*/
+#if defined(_MSC_VER)
+/* Desktop rnx2rtkp is single-threaded: avoid MSVC TLS dialect issues here. */
+#define THREADLOCAL
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 #define THREADLOCAL _Thread_local
-#elif defined(__GNUC__)
+#elif defined(__GNUC__) || defined(__clang__)
 #define THREADLOCAL __thread
-#elif defined(_MSC_VER)
-#define THREADLOCAL __declspec(__thread)
 #else
 #define THREADLOCAL
 #endif
@@ -205,7 +211,7 @@ extern "C" {
 #endif
 #ifdef ENACMP
 #define MINPRNCMP   1                   /* min satellite sat number of BeiDou */
-#define MAXPRNCMP   46                  /* max satellite sat number of BeiDou */
+#define MAXPRNCMP   63                  /* max BeiDou PRN (incl. C59-C63 GEO/BDS-3) */
 #define NSATCMP     (MAXPRNCMP-MINPRNCMP+1) /* number of BeiDou satellites */
 #define NSYSCMP     1
 #else
@@ -293,7 +299,7 @@ extern "C" {
 #define MAXGISLAYER 32                  /* max number of GIS data layers */
 #define MAXRCVCMD   4096                /* max length of receiver commands */
 #define MAX_CODE_BIASES 3               /* max # of different code biases per freq */
-#define MAX_CODE_BIAS_FREQS 2           /* max # of freqs supported for code biases  */
+#define MAX_CODE_BIAS_FREQS 3           /* code-bias slots: L1/L2(or E5b/B2b)/L5(E5a/B2a) */
 
 #define RNX2VER     2.10                /* RINEX ver.2 default output version */
 #define RNX3VER     3.00                /* RINEX ver.3 default output version */
@@ -843,6 +849,12 @@ typedef struct {        /* SSR correction type */
     uint8_t update;     /* update flag (0:no update,1:update) */
 } ssr_t;
 
+typedef struct {        /* time-bounded satellite code OSB (Bias-SINEX) */
+    gtime_t start,end;  /* GPST validity [start,end) */
+    double bias;        /* m */
+    int next;           /* next record for the same satellite/code, index + 1 */
+} codeosb_t;
+
 typedef struct {        /* navigation data type */
     int n,nmax;         /* number of broadcast ephemeris */
     int ng,ngmax;       /* number of glonass ephemeris */
@@ -872,7 +884,12 @@ typedef struct {        /* navigation data type */
     double ion_cmp[8];  /* BeiDou iono model parameters {a0,a1,a2,a3,b0,b1,b2,b3} */
     double ion_irn[8];  /* IRNSS iono model parameters {a0,a1,a2,a3,b0,b1,b2,b3} */
     int glo_fcn[32];    /* GLONASS FCN + 8 */
-    double cbias[MAXSAT][MAX_CODE_BIAS_FREQS][MAX_CODE_BIASES]; /* satellite DCB [0:P1-C1,1:P2-C2][code] (m) */
+    double cbias[MAXSAT][MAX_CODE_BIAS_FREQS][MAX_CODE_BIASES]; /* legacy relative code biases/DCB (m) */
+    double osb[MAXSAT][MAXCODE+1]; /* absolute satellite code OSB from Bias-SINEX (m), indexed by CODE_Lxx */
+    uint8_t osb_valid[MAXSAT][MAXCODE+1]; /* OSB availability flag (zero is a valid bias value) */
+    int nosb,nosbmax;  /* number/capacity of time-bounded code OSBs */
+    codeosb_t *osbs;   /* Bias-SINEX code OSB records */
+    int osb_head[MAXSAT][MAXCODE+1]; /* first record per satellite/code, index + 1 */
     double rbias[MAXRCV][MAX_CODE_BIAS_FREQS][MAX_CODE_BIASES]; /* receiver DCB (0:P1-P2,1:P1-C1,2:P2-C2) (m) */
     pcv_t pcvs[MAXSAT]; /* satellite antenna pcv */
     sbssat_t sbssat;    /* SBAS satellite corrections */
@@ -1192,6 +1209,43 @@ typedef struct {        /* satellite status type */
     double phw;         /* phase windup (cycle) */
     gtime_t pt[2][NFREQ]; /* previous carrier-phase time */
     double  ph[2][NFREQ]; /* previous carrier-phase observable (cycle) */
+    /* causal Doppler-smoothed pseudorange for fast phone PPP initialization */
+    gtime_t psmt[NFREQ];
+    double psmP[NFREQ];
+    float  psmD[NFREQ];
+    uint8_t psmvalid[NFREQ];
+    /* Per-epoch raw-code precheck result. A rejected code never enters the
+       smoother, ambiguity initialization, or PPP measurement update. */
+    uint8_t ppp_code_bad[NFREQ];
+    /* Doppler history is independent of code smoothing so phase/Doppler slip
+       detection still works when a phone reports phase but omits code. */
+    gtime_t ppp_dop_time[NFREQ];
+    float ppp_doppler[NFREQ];
+    uint8_t ppp_dop_valid[NFREQ];
+    /* PPP phase-only quarantine after repeated post-fit rejections. */
+    gtime_t ppp_phase_reject_time[NFREQ];
+    gtime_t ppp_phase_block_until[NFREQ];
+    uint8_t ppp_phase_reject_streak[NFREQ];
+    uint8_t ppp_track_code[NFREQ]; /* actual RINEX code occupying each slot */
+    uint8_t ppp_phase_quar_count[NFREQ]; /* repeated bad arcs for this signal */
+    gtime_t ppp_phase_good_since[NFREQ];
+    /* Slowly varying corrected code-minus-phase inconsistency. A persistent
+       drift reduces code weight, never silently edits the raw observation. */
+    gtime_t ppp_cmc_quality_time[NFREQ];
+    double ppp_cmc_quality_mean[NFREQ];
+    double ppp_cmc_quality_ref[NFREQ];
+    uint8_t ppp_cmc_quality_count[NFREQ];
+    uint8_t ppp_cmc_code_weak[NFREQ];
+    /* Persistent half-cycle-unresolved LLI is a state, not an epochly slip. */
+    uint8_t ppp_half_seen[NFREQ];
+    uint8_t ppp_half_invalid[NFREQ];
+    /* PPP diagnostics only: corrected raw code-minus-phase arc history (m). */
+    gtime_t ppp_diag_cmc_start[NFREQ];
+    gtime_t ppp_diag_cmc_time[NFREQ];
+    double ppp_diag_cmc_first[NFREQ];
+    double ppp_diag_cmc_last[NFREQ];
+    uint8_t ppp_diag_cmc_code[NFREQ];
+    uint8_t ppp_diag_cmc_half_invalid[NFREQ];
 } ssat_t;
 
 typedef struct {        /* ambiguity control type */
@@ -1221,6 +1275,12 @@ typedef struct {        /* RTK control/result type */
     prcopt_t opt;       /* processing options */
     int initial_mode;   /* initial positioning mode */
     int epoch;          /* epoch number */
+    /* PPP code/Doppler bootstrap state. These flags let PPP start with a
+     * robust code-only solution, then introduce phase ambiguities cleanly. */
+    gtime_t ppp_start_time;
+    unsigned char ppp_start_valid;
+    unsigned char ppp_code_warmup;
+    unsigned char ppp_phase_started;
     int intpres_nb;     // Time interpolation of residuals, number of previous base observations.
     obsd_t intpres_obsb[MAXOBS]; // Time interpolation of residuals, previous base observations.
 } rtk_t;
@@ -1652,6 +1712,8 @@ EXPORT int  getseleph(int sys);
 EXPORT void readsp3(const char *file, nav_t *nav, int opt);
 EXPORT int  readsap(const char *file, gtime_t time, nav_t *nav);
 EXPORT int  readdcb(const char *file, nav_t *nav, const sta_t *sta);
+EXPORT int  codeosb_at(const nav_t *nav, gtime_t time, int sat, int code,
+                       double *bias); /* 1:valid, 0:absent, -1:out of validity */
 EXPORT int code2bias_ix(const int sys,const int code);
 /*EXPORT int  readfcb(const char *file, nav_t *nav);*/
 EXPORT void alm2pos(gtime_t time, const alm_t *alm, double *rs, double *dts);
@@ -1852,7 +1914,10 @@ EXPORT int  rtkoutstat(rtk_t *rtk, int level, char *buff);
 /* precise point positioning -------------------------------------------------*/
 EXPORT void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);
 EXPORT int pppnx(const prcopt_t *opt);
+EXPORT int pppambidx(int sat, int f, const prcopt_t *opt);
 EXPORT int pppoutstat(rtk_t *rtk, char *buff);
+EXPORT int pppvmf3load(const char *file0, const char *file1,
+                       const char *orog);
 
 EXPORT int ppp_ar(rtk_t *rtk, const obsd_t *obs, int n, int *exc,
                   const nav_t *nav, const double *azel, double *x, double *P);
@@ -1918,5 +1983,4 @@ extern void settime(gtime_t time);
 #ifdef __cplusplus
 }
 #endif
-#endif /* RTKLIB_H */
 #endif /* RTKLIB_H */

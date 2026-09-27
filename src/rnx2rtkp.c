@@ -23,8 +23,23 @@
 #define PROGNAME    "rnx2rtkp"          /* program name */
 #define MAXFILE     16                  /* max number of input files */
 
+/* Optional overrides keep controlled A/B runs from overwriting the normal
+ * observation, solution and trace files. Empty variables retain defaults. */
+static int env_copy(char *dst, size_t capacity, const char *name)
+{
+    const char *value = getenv(name);
+
+    if (!value || !*value) return 1;
+    if (strlen(value) >= capacity) {
+        fprintf(stderr, "%s is too long\n", name);
+        return 0;
+    }
+    strcpy(dst, value);
+    return 1;
+}
+
 /* help text -----------------------------------------------------------------*/
-static const char *help[]={
+static const char* help[] = {
 "",
 " usage: rnx2rtkp [option]... file file [...]",
 "",
@@ -76,11 +91,11 @@ static const char *help[]={
 " --version display release version",
 };
 /* show message --------------------------------------------------------------*/
-extern int showmsg(const char *format, ...)
+extern int showmsg(const char* format, ...)
 {
     va_list arg;
-    va_start(arg,format); vfprintf(stderr,format,arg); va_end(arg);
-    fprintf(stderr,"\r");
+    va_start(arg, format); vfprintf(stderr, format, arg); va_end(arg);
+    fprintf(stderr, "\r");
     return 0;
 }
 extern void settspan(gtime_t ts, gtime_t te) {}
@@ -90,7 +105,7 @@ extern void settime(gtime_t time) {}
 static void printhelp(void)
 {
     int i;
-    for (i=0;i<(int)(sizeof(help)/sizeof(*help));i++) fprintf(stderr,"%s\n",help[i]);
+    for (i = 0; i < (int)(sizeof(help) / sizeof(*help)); i++) fprintf(stderr, "%s\n", help[i]);
     exit(0);
 }
 /* rnx2rtkp main -------------------------------------------------------------*/
@@ -98,34 +113,43 @@ int main() {
     int i, n, ret;
     double tint = 0.0;              /* 求解时间间隔 (0:使用观测数据默认间隔) */
     gtime_t ts = { 0 }, te = { 0 }; /* 历元时段始末控制变量 */
-    char* infile[MAXFILE], outfile[MAXSTRPATH] = { '\0' };
+    const char* infile[MAXFILE];
+    char outfile[MAXSTRPATH] = { '\0' };
 
     // ========================================================================
     // 1. 【核心修改区：文件路径配置】 (注意 Windows 下路径用双斜杠 \\)
     // ========================================================================
 
     /* 设置结果输出文件的绝对路径 */
-    char result_file[] = "E:\\RTKLIB_Data\\PPP_Result\\smartphone_ppp_solution.pos";
+    char result_file[] = "E:\\RTKLIB_Data\\PPP_Result\\K80-GNSS00GEO_R_20260760533_20M_01S_MO.pos";
     strcpy(outfile, result_file);
 
     /* * 输入文件列表 (PPP 核心文件)
      */
     char infile_[MAXFILE][MAXSTRPATH] = {
         /*"E:\\RTKLIB_Data\\OBS\\GNSS00GEO_R_20261421459_11M_01S_MO.rnx", */
-        "E:\\RTKLIB_Data\\OBS\\smoothed_output.rnx",
-        "E:\\RTKLIB_Data\\NAV\\BRDC00WRD_S_20261420000_01D_MN.rnx",       /* 2. 广播星历文件 */
-        "E:\\RTKLIB_Data\\SP3\\WHU0MGXRTS_20261420000_01D_30S_ORB.SP3",   /* 3. 精密星历文件 (SP3) */
-        "E:\\RTKLIB_Data\\CLK\\WHU0MGXRTS_20261420000_01D_05S_CLK.CLK",   /* 4. 精密钟差文件 (CLK) */
-         "E:\\RTKLIB_Data\\IONEX\\whug1420.26i",
+        "E:\\RTKLIB_Data\\OBS\\K80-GNSS00GEO_R_20260760533_20M_01S_MO.rnx",
+        "E:\\RTKLIB_Data\\NAV\\BRDC00IGS_R_20260760000_01D_MN.rnx",       /* 2. 广播星历文件 */
+        "E:\\RTKLIB_Data\\SP3\\WUM0MGXFIN_20260760000_01D_05M_ORB.SP3",   /* 3. 精密星历文件 (SP3) */
+        "E:\\RTKLIB_Data\\CLK\\WUM0MGXFIN_20260760000_01D_30S_CLK.CLK",   /* 4. 精密钟差文件 (CLK) */
+         "E:\\RTKLIB_Data\\IONEX\\COD0OPSFIN_20260760000_01D_01H_GIM.INX",
         ""
     };
 
+    if (!env_copy(outfile, sizeof(outfile), "RTK_PPP_OUTPUT") ||
+        !env_copy(infile_[0], sizeof(infile_[0]), "RTK_PPP_OBS")) return -1;
+
     /* 模型参数文件路径设置 (PPP 强依赖这些模型文件) */
-    filopt_t filopt = { "", "", "", "", "", "", "", "" };
+    filopt_t filopt = { 0 };
     // 手机本身没有天线相位中心(PCV)模型，但必须提供卫星的 .atx 文件，否则依然会有系统误差
     strcpy(filopt.satantp, "E:\\RTKLIB_Data\\Tables\\igs20.atx"); /* 卫星天线参数文件 */
-    strcpy(filopt.iono, "E:\\RTKLIB_Data\\IONEX\\whug1420.26i");
-    strcpy(filopt.dcb, "E:\\RTKLIB_Data\\BIA\\WUM0MGXRTS_20261420000_01D_05M_OSB.BIA");
+    strcpy(filopt.iono, "E:\\RTKLIB_Data\\IONEX\\COD0OPSFIN_20260760000_01D_01H_GIM.INX");
+    strcpy(filopt.dcb, "E:\\RTKLIB_Data\\BIA\\WUM0MGXFIN_20260760000_01D_01D_OSB.BIA");
+    if (!env_copy(filopt.dcb, sizeof(filopt.dcb), "RTK_PPP_BIA")) return -1;
+    // 开启 WGS84 椭球高 到 正常高(海拔高) 的转换
+
+    // 指定高程异常模型文件的绝对路径 (注意双斜杠)
+
     // ========================================================================
     // 2. 【时间段设置】
     // ========================================================================
@@ -148,57 +172,136 @@ int main() {
         ======================================================================== */
     prcopt_t prcopt = prcopt_default;
     solopt_t solopt = solopt_default;
-
-    /* --- 核心估计模式 --- */
+    /* ========================================================================
+         【第一部分：核心物理模型与解算模式】
+         ======================================================================== */
+         // 如果你拿在手里走动/放在车上，请务必改为 PMODE_PPP_KINEMA (动态PPP)
+         // 即使是放在天台静止，手机时钟太差，早期调试也建议先用 KINEMA 跑通
+    /*
+     * Stage-1 convergence validation: use a static phone data set first.
+     * After this is stable, switch to PMODE_PPP_KINEMA + dynamics=1 for a
+     * moving handset. Keeping the PPP core identical makes later Android/JNI
+     * migration straightforward.
+     */
     prcopt.mode = PMODE_PPP_STATIC;
-    prcopt.navsys = SYS_GPS | SYS_GLO | SYS_GAL | SYS_CMP;
-    prcopt.nf = 2;
+    prcopt.dynamics = 0;
 
-    prcopt.ionoopt = IONOOPT_EST; /* 坚守电离层估计 */
-    prcopt.tropopt = TROPOPT_EST; /* 坚守对流层估计 */
+    prcopt.navsys = SYS_GPS | SYS_GAL | SYS_CMP; /* GPS + Galileo + BDS */
+    prcopt.nf = 3; /* keep native slots L1/L2/L5; missing L2 is allowed */
 
-    /* 🌟 1. 物理遮挡：切除低仰角，防止非线性大气误差 🌟 */
-    prcopt.elmin = 20.0 * D2R; /* 必须 20 度！20度以下的对流层投影函数极其不准，会直接撕裂滤波器 */
+    prcopt.sateph = EPHOPT_PREC; /* offline validation with SP3/CLK */
+    prcopt.ionoopt = IONOOPT_EST; /* IONEX correction (not an EST state) */
+    prcopt.tropopt = TROPOPT_EST; // 估计对流层天顶延迟
+    /* ========================================================================
+       【第二部分：极度降权机制 (拯救满屏飞车的核心)】
+       ======================================================================== */
+       /* Smartphone measurement noise. err[1]/err[2] describe carrier phase;
+          eratio[] scales code relative to phase. */
+    prcopt.err[1] = 0.008;  /* phone phase constant term (m), calibrated from this dataset */
+    prcopt.err[2] = 0.012;  /* phone phase elevation term (m) */
+    prcopt.eratio[0] = 100.0; /* L1 code/phase ratio */
+    prcopt.eratio[1] = 70.0;  /* L2/E5b/B2b */
+    prcopt.eratio[2] = 60.0;  /* L5/E5a/B2a */
 
-    /* 🌟 2. 状态过程噪声约束 (Process Noise - 极其核心) 🌟 */
-    // prn[1] 控制电离层每秒允许的变化量。默认可能偏大，这里压到 1E-4。
-    prcopt.prn[1] = 1E-3; /* 电离层过程噪声：从 1E-4 放宽到 1E-3，加速收敛 */
+    /* ========================================================================
+       【第三部分：放宽周跳与模糊度约束 (打破重置死循环)】
+       ======================================================================== */
+       // 🌟核心：彻底关闭模糊度固定 (AR)。手机的相位质量根本经不起强行固定的折腾。
+    prcopt.modear = ARMODE_OFF;
 
-    // prn[2] 控制对流层每秒允许的变化量。对流层极其稳定，压死到 1E-5。
-    // 这样滤波器即使拿到几十米的伪距噪声，也绝对不敢把它塞进对流层里！
-    prcopt.prn[2] = 1E-5;
+    // 🌟核心：放宽几何无关(GF)组合周跳探测的阈值。
+    // 默认是 0.05 米，手机伪距一抖就超标。这里放宽到 0.20 米，减少误判。
+    prcopt.thresslip = 0.20;
 
-    /* 🌟 3. 初始方差约束 (Initial Variance) 🌟 */
-    // 既然你传入了 IONEX (.26i) 文件，电离层初值是有一定准度的，限制其初始搜索范围
-    prcopt.std[1] = 2.0; /* 电离层初始标准差 (米) */
-    prcopt.std[2] = 0.2; /* 对流层初始标准差 (米) - 天顶延迟一般在 2.3m 左右，盲猜也不会偏太多 */
+    /* Keep library innovation limits at their configured/default values. */
 
-    /* 🌟 4. 彻底抛弃伪距信任 (Variance Mapping) 🌟 */
-    // 因为你在估计全参数，伪距的毒性会被成倍放大。必须极致降权！
-    prcopt.err[1] = 500.0; /* 伪距方差是相位的 500 倍 */
-    prcopt.err[2] = 0.015; /* 稍微放宽一点相位的包容度，防假周跳 */
-    prcopt.err[3] = 10.0;  /* 仰角惩罚指数 */
+    /* ========================================================================
+       【第四部分：滤波器状态过程噪声 (Q阵微调)】
+       ======================================================================== */
+    prcopt.elmin = 15.0 * D2R; /* keep geometry; low-elevation data are down-weighted */
+    /* Process noise: avoid both over-freezing and excessive random walk. */
+    prcopt.prn[0] = 1E-4; /* ambiguity random walk */
+    prcopt.prn[1] = 1E-3; /* ionosphere, only used in EST mode */
+    prcopt.prn[2] = 1E-4; /* troposphere */
+    prcopt.maxout = 30;   /* tolerate short phone observation outages */
 
-    prcopt.maxinno[0] = 0.0; /* 依然关闭剔除，靠方差权重硬抗 */
-    prcopt.maxinno[1] = 0.0;
+    /* IONCONSINT=1 retains the previous IONEX weighting for comparison.
+       Longer effective correlation intervals can be tested with A/B runs,
+       but an hourly map interval does not establish the product-error
+       correlation time; 300/3600 s produced negative estimated ZWD here.
+       VMF3SIG initializes ZTD. VMF3ZWDSIG/VMF3ZWDINT then provide a weak,
+       time-decorrelated wet-delay constraint while PPP continues estimating it.
+       BDSCODEVAR=4 doubles BeiDou code standard deviation after a 120 s
+       linear transition; set BDSCODEVAR=1 for an unmodified A/B run.
+       -WGTELCN=1 uses the full paper model; =2 applies it only to L1.
+       DOPPSLIP applies a clock-common-mode-removed phase/Doppler test;
+       CODEJUMP rejects only gross code innovations; MWTHRES is deliberately
+       loose because phone code noise makes classic MW detection fragile.
+       PPPQUAR=3,120 gives repeatedly rejected phase arcs time to cool off;
+       the hold grows to at most 600 s but resets after 120 s of accepted
+       tracking. Experimental CMC reweighting is off unless explicitly set
+       with -SIGCMCDRIFT=<metres>. */
+    strcpy(prcopt.pppopt,
+        "-GAP_RESION=120 -IONCONS=1.5 -IONCONSINT=1 -VMF3SIG=0.15 -VMF3ZWDSIG=0.30 -VMF3ZWDINT=300 -DOPPSM=0.90 -DOPPWARM=10 -PREPROC=1 -DOPPSLIP=0.50 -CODEJUMP=30 -MWTHRES=5 -BDSCODEVAR=1 -BDSCODEWARM=120 -WGTELCN=0 -PPPDIAG=1 -PPPQUAR=3,120");
+    if (!env_copy(prcopt.pppopt, sizeof(prcopt.pppopt), "RTK_PPP_OPTS")) return -1;
+    {
+        const char *systems = getenv("RTK_PPP_SYSTEMS");
+        if (systems && *systems) {
+            int mask = 0;
+            const char *c;
+            for (c = systems; *c; c++) {
+                switch (*c) {
+                case 'G': mask |= SYS_GPS; break;
+                case 'R': mask |= SYS_GLO; break;
+                case 'E': mask |= SYS_GAL; break;
+                case 'C': mask |= SYS_CMP; break;
+                case 'J': mask |= SYS_QZS; break;
+                default:
+                    fprintf(stderr, "Invalid RTK_PPP_SYSTEMS character: %c\n", *c);
+                    return -1;
+                }
+            }
+            prcopt.navsys = mask;
+        }
+    }
 
-    /* --- 常规设置 --- */
     prcopt.tidecorr = 1;
-    prcopt.posopt[0] = 0;
-    prcopt.posopt[1] = 0;
-    prcopt.posopt[2] = 1;
+    prcopt.posopt[0] = 1; /* satellite antenna PCV: igs20.atx is provided */
+    prcopt.posopt[1] = 0; /* no calibrated phone receiver antenna PCV */
+    prcopt.posopt[2] = 1; /* phase wind-up */
+    prcopt.posopt[3] = 1; /* eclipse exclusion */
+    prcopt.snrmask.ena[0] = 0; /* use continuous C/N0 weighting, not hard masking */
+
+    /* ------------------------------------------------------------------------
+       [核心 6] 物理切除劣质数据：信噪比 (SNR) 掩码
+       ------------------------------------------------------------------------ */
+       /* 1. 开启流动站 (Rover) 的信噪比掩码功能 (1=开启, 0=关闭) */
+
+
     // ========================================================================
     // 4. 【执行解算】
     // ========================================================================
     printf("Starting Smartphone Un-combined PPP Processing...\n");
-    traceopen("E:\\RTKLIB_Data\\ppp_debug.trace");
-    tracelevel(3);
+    {
+        char trace_file[MAXSTRPATH] = "E:\\RTKLIB_Data\\ppp_debug.trace";
+        const char *level = getenv("RTK_PPP_TRACE_LEVEL");
+        if (!env_copy(trace_file, sizeof(trace_file), "RTK_PPP_TRACE")) return -1;
+        traceopen(trace_file);
+        tracelevel(level ? atoi(level) : 3);
+    }
+    if (!pppvmf3load("E:\\RTKLIB_Data\\tro\\VMF3_20260317.H00",
+                     "E:\\RTKLIB_Data\\tro\\VMF3_20260317.H06",
+                      "E:\\RTKLIB_Data\\tro\\orography_ell_5x5")) {
+        fprintf(stderr,
+            "WARNING: VMF3 files were not loaded; using the internal troposphere model.\n");
+    }
+    solopt.sstat = 2;
+    solopt.maxsolstd = 0.0; /* keep all epochs while diagnosing convergence */
     long t1 = clock();
     ret = postpos(ts, te, tint, 0.0, &prcopt, &solopt, &filopt, infile, n, outfile, "", "");
     long t2 = clock();
 
     if (!ret) fprintf(stderr, "%40s\r", "Processing completed.");
-
     printf("\n* Result saved to: %s\n", outfile);
     printf("* The total time for running the program: %6.3f seconds\n", (double)(t2 - t1) / CLOCKS_PER_SEC);
     printf("Press 'Enter' key to exit...\n");
