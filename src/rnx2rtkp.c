@@ -19,6 +19,7 @@
 *-----------------------------------------------------------------------------*/
 #include <stdarg.h>
 #include "./rtklib.h"
+#include "smartphone_ppp_config.h"
 
 #define PROGNAME    "rnx2rtkp"          /* program name */
 #define MAXFILE     16                  /* max number of input files */
@@ -172,77 +173,19 @@ int main() {
         ======================================================================== */
     prcopt_t prcopt = prcopt_default;
     solopt_t solopt = solopt_default;
-    /* ========================================================================
-         【第一部分：核心物理模型与解算模式】
-         ======================================================================== */
-         // 如果你拿在手里走动/放在车上，请务必改为 PMODE_PPP_KINEMA (动态PPP)
-         // 即使是放在天台静止，手机时钟太差，早期调试也建议先用 KINEMA 跑通
-    /*
-     * Stage-1 convergence validation: use a static phone data set first.
-     * After this is stable, switch to PMODE_PPP_KINEMA + dynamics=1 for a
-     * moving handset. Keeping the PPP core identical makes later Android/JNI
-     * migration straightforward.
-     */
-    prcopt.mode = PMODE_PPP_STATIC;
-    prcopt.dynamics = 0;
-
-    prcopt.navsys = SYS_GPS | SYS_GAL | SYS_CMP; /* GPS + Galileo + BDS */
-    prcopt.nf = 3; /* keep native slots L1/L2/L5; missing L2 is allowed */
-
-    prcopt.sateph = EPHOPT_PREC; /* offline validation with SP3/CLK */
-    prcopt.ionoopt = IONOOPT_EST; /* IONEX correction (not an EST state) */
-    prcopt.tropopt = TROPOPT_EST; // 估计对流层天顶延迟
-    /* ========================================================================
-       【第二部分：极度降权机制 (拯救满屏飞车的核心)】
-       ======================================================================== */
-       /* Smartphone measurement noise. err[1]/err[2] describe carrier phase;
-          eratio[] scales code relative to phase. */
-    prcopt.err[1] = 0.008;  /* phone phase constant term (m), calibrated from this dataset */
-    prcopt.err[2] = 0.012;  /* phone phase elevation term (m) */
-    prcopt.eratio[0] = 100.0; /* L1 code/phase ratio */
-    prcopt.eratio[1] = 70.0;  /* L2/E5b/B2b */
-    prcopt.eratio[2] = 60.0;  /* L5/E5a/B2a */
-
-    /* ========================================================================
-       【第三部分：放宽周跳与模糊度约束 (打破重置死循环)】
-       ======================================================================== */
-       // 🌟核心：彻底关闭模糊度固定 (AR)。手机的相位质量根本经不起强行固定的折腾。
-    prcopt.modear = ARMODE_OFF;
-
-    // 🌟核心：放宽几何无关(GF)组合周跳探测的阈值。
-    // 默认是 0.05 米，手机伪距一抖就超标。这里放宽到 0.20 米，减少误判。
-    prcopt.thresslip = 0.20;
-
-    /* Keep library innovation limits at their configured/default values. */
-
-    /* ========================================================================
-       【第四部分：滤波器状态过程噪声 (Q阵微调)】
-       ======================================================================== */
-    prcopt.elmin = 15.0 * D2R; /* keep geometry; low-elevation data are down-weighted */
-    /* Process noise: avoid both over-freezing and excessive random walk. */
-    prcopt.prn[0] = 1E-4; /* ambiguity random walk */
-    prcopt.prn[1] = 1E-3; /* ionosphere, only used in EST mode */
-    prcopt.prn[2] = 1E-4; /* troposphere */
-    prcopt.maxout = 30;   /* tolerate short phone observation outages */
-
-    /* IONCONSINT=1 retains the previous IONEX weighting for comparison.
-       Longer effective correlation intervals can be tested with A/B runs,
-       but an hourly map interval does not establish the product-error
-       correlation time; 300/3600 s produced negative estimated ZWD here.
-       VMF3SIG initializes ZTD. VMF3ZWDSIG/VMF3ZWDINT then provide a weak,
-       time-decorrelated wet-delay constraint while PPP continues estimating it.
-       BDSCODEVAR=4 doubles BeiDou code standard deviation after a 120 s
-       linear transition; set BDSCODEVAR=1 for an unmodified A/B run.
-       -WGTELCN=1 uses the full paper model; =2 applies it only to L1.
-       DOPPSLIP applies a clock-common-mode-removed phase/Doppler test;
-       CODEJUMP rejects only gross code innovations; MWTHRES is deliberately
-       loose because phone code noise makes classic MW detection fragile.
-       PPPQUAR=3,120 gives repeatedly rejected phase arcs time to cool off;
-       the hold grows to at most 600 s but resets after 120 s of accepted
-       tracking. Experimental CMC reweighting is off unless explicitly set
-       with -SIGCMCDRIFT=<metres>. */
-    strcpy(prcopt.pppopt,
-        "-GAP_RESION=120 -IONCONS=1.5 -IONCONSINT=1 -VMF3SIG=0.15 -VMF3ZWDSIG=0.30 -VMF3ZWDINT=300 -DOPPSM=0.90 -DOPPWARM=10 -PREPROC=1 -DOPPSLIP=0.50 -CODEJUMP=30 -MWTHRES=5 -BDSCODEVAR=1 -BDSCODEWARM=120 -WGTELCN=0 -PPPDIAG=1 -PPPQUAR=3,120");
+    /* All entry points share the current PC baseline. */
+    smartphone_ppp_configure(&prcopt, &solopt);
+    {
+        /* Reproducible B1C ablation without changing any other PPP option. */
+        const char *nf_env = getenv("RTK_PPP_NF");
+        if (nf_env && *nf_env) {
+            if (!strcmp(nf_env, "3")) prcopt.nf = 3;
+            else if (strcmp(nf_env, "4")) {
+                fprintf(stderr, "RTK_PPP_NF must be 3 or 4\n");
+                return -1;
+            }
+        }
+    }
     if (!env_copy(prcopt.pppopt, sizeof(prcopt.pppopt), "RTK_PPP_OPTS")) return -1;
     {
         const char *systems = getenv("RTK_PPP_SYSTEMS");
@@ -264,19 +207,52 @@ int main() {
             prcopt.navsys = mask;
         }
     }
+    {
+        /* GLONASS FDMA code needs receiver-bias validation before it can be
+         * a safe default for phone PPP. This explicit opt-in wins over the
+         * general system mask for reproducible A/B processing. */
+        const char *glo = getenv("RTK_PPP_GLO");
+        if (glo && *glo) {
+            if (!strcmp(glo, "1")) prcopt.navsys |= SYS_GLO;
+            else if (!strcmp(glo, "0")) prcopt.navsys &= ~SYS_GLO;
+            else {
+                fprintf(stderr, "RTK_PPP_GLO must be 0 or 1\n");
+                return -1;
+            }
+        }
+    }
+    if ((prcopt.navsys & SYS_GLO) && NSATGLO == 0) {
+        fprintf(stderr, "GLONASS requested but ENAGLO is not enabled in this build\n");
+        return -1;
+    }
+    {
+        /* Controlled satellite leave-one-out tests; no default exclusion. */
+        const char *excluded = getenv("RTK_PPP_EXSATS");
+        if (excluded && *excluded) {
+            char ids[256], *id;
+            if (strlen(excluded) >= sizeof(ids)) {
+                fprintf(stderr, "RTK_PPP_EXSATS is too long\n");
+                return -1;
+            }
+            strcpy(ids, excluded);
+            for (id = strtok(ids, ", "); id; id = strtok(NULL, ", ")) {
+                int sat = satid2no(id);
+                if (sat < 1 || sat > MAXSAT) {
+                    fprintf(stderr, "Invalid RTK_PPP_EXSATS satellite: %s\n", id);
+                    return -1;
+                }
+                prcopt.exsats[sat - 1] = 1;
+            }
+        }
+    }
 
-    prcopt.tidecorr = 1;
-    prcopt.posopt[0] = 1; /* satellite antenna PCV: igs20.atx is provided */
-    prcopt.posopt[1] = 0; /* no calibrated phone receiver antenna PCV */
-    prcopt.posopt[2] = 1; /* phase wind-up */
-    prcopt.posopt[3] = 1; /* eclipse exclusion */
-    prcopt.snrmask.ena[0] = 0; /* use continuous C/N0 weighting, not hard masking */
-
-    /* ------------------------------------------------------------------------
-       [核心 6] 物理切除劣质数据：信噪比 (SNR) 掩码
-       ------------------------------------------------------------------------ */
-       /* 1. 开启流动站 (Rover) 的信噪比掩码功能 (1=开启, 0=关闭) */
-
+    {
+        char config_error[256];
+        if (!smartphone_ppp_validate(&prcopt, config_error, sizeof(config_error))) {
+            fprintf(stderr, "PPP configuration error: %s\n", config_error);
+            return -1;
+        }
+    }
 
     // ========================================================================
     // 4. 【执行解算】
@@ -289,14 +265,13 @@ int main() {
         traceopen(trace_file);
         tracelevel(level ? atoi(level) : 3);
     }
+    smartphone_ppp_log("pc-postprocess", &prcopt);
     if (!pppvmf3load("E:\\RTKLIB_Data\\tro\\VMF3_20260317.H00",
                      "E:\\RTKLIB_Data\\tro\\VMF3_20260317.H06",
                       "E:\\RTKLIB_Data\\tro\\orography_ell_5x5")) {
         fprintf(stderr,
             "WARNING: VMF3 files were not loaded; using the internal troposphere model.\n");
     }
-    solopt.sstat = 2;
-    solopt.maxsolstd = 0.0; /* keep all epochs while diagnosing convergence */
     long t1 = clock();
     ret = postpos(ts, te, tint, 0.0, &prcopt, &solopt, &filopt, infile, n, outfile, "", "");
     long t2 = clock();

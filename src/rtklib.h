@@ -157,7 +157,7 @@ extern "C" {
 #define  ENAGAL
 #define  ENACMP
 #ifndef NFREQ
-#define NFREQ       3                   /* number of carrier frequencies */
+#define NFREQ       4                   /* BDS B1I/B2b/B2a/B1C use separate slots */
 #endif
 #define NFREQGLO    2                   /* number of carrier frequencies of GLONASS */
 
@@ -1041,7 +1041,7 @@ typedef struct {        /* SNR mask type */
 typedef struct {        /* processing options type */
     int mode;           /* positioning mode (PMODE_???) */
     int soltype;        /* solution type (0:forward,1:backward,2:combined) */
-    int nf;             /* number of frequencies (1:L1,2:L1+L2,3:L1+L2+L5) */
+    int nf;             /* number of PPP frequencies (4 includes BDS B1C slot) */
     int navsys;         /* navigation system */
     double elmin;       /* elevation mask angle (rad) */
     snrmask_t snrmask;  /* SNR mask */

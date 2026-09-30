@@ -38,9 +38,11 @@
     <ClCompile><Optimization>MaxSpeed</Optimization><PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\src\smartphone_ppp_config.h" />
     <ClInclude Include="..\src\gnss_raw.h" /><ClInclude Include="..\src\gnss_adapter.h" /><ClInclude Include="..\src\gnss_signal_policy.h" /><ClInclude Include="..\src\rtklib.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\src\smartphone_ppp_config.c" />
     <ClCompile Include="..\src\gnss_replay.c" /><ClCompile Include="..\src\gnss_adapter.c" /><ClCompile Include="..\src\gnss_signal_policy.c" />
     <ClCompile Include="..\src\rtkcmn.c" /><ClCompile Include="..\src\rtkpos.c" />
     <ClCompile Include="..\src\ppp.c" /><ClCompile Include="..\src\ppp_ar.c" />

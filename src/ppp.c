@@ -148,17 +148,20 @@
 /*
  * Receiver code biases are estimated only relative to each constellation's
  * reference code (GPS/GAL C1C, BDS C2I). Estimating a state for a reference
- * code would be indistinguishable from its receiver-clock state. The four
- * retained states match the signals selected from this phone RINEX.
+ * code would be indistinguishable from its receiver-clock state. The original
+ * four states match the three-frequency phone profile. B1C
+ * has its own state relative to the B1I reference code, not a replacement
+ * for B1I and not another BDS receiver clock.
  */
 enum {
     RCB_GPS_C5Q = 0,
     RCB_GAL_C5Q,
     RCB_BDS_C7I,
     RCB_BDS_C5P,
+    RCB_BDS_C1P,
     NIFB_PPP
 };
-#define ND(opt)     ((opt)->nf>=3?NIFB_PPP:0)
+#define ND(opt)     ((opt)->nf>=4?NIFB_PPP:((opt)->nf>=3?RCB_BDS_C1P:0))
 
 #define NR(opt)     (NP(opt)+NC(opt)+NT(opt)+NI(opt)+ND(opt))
 #define NB(opt)     (NF(opt)*MAXSAT)
@@ -199,6 +202,8 @@ static int ppp_ifb_index(int sys, int frq, uint8_t code, const prcopt_t* opt)
         frq == 1 && !strcmp(obs, "7I")) return RCB_BDS_C7I;
     if (sys == SYS_CMP &&
         frq == 2 && !strcmp(obs, "5P")) return RCB_BDS_C5P;
+    if (sys == SYS_CMP && opt->nf >= 4 &&
+        frq == 3 && !strcmp(obs, "1P")) return RCB_BDS_C1P;
 
     return -1; /* reference code or a signal not configured for this data */
 }
@@ -210,6 +215,29 @@ static int ppp_code_modelled(int sys, int frq, uint8_t code,
                              const prcopt_t *opt)
 {
     return frq == 0 || ppp_ifb_index(sys, frq, code, opt) >= 0;
+}
+
+/* The fourth PPP slot is reserved for BDS B1C pilot. Other systems' fourth
+ * signals and BDS B3 must not enter this unchanged phone PPP model. */
+static int ppp_signal_supported(int sys, int frq, uint8_t code,
+                                const prcopt_t *opt)
+{
+    const char *obs = code2obs(code);
+    const char *p;
+    int gal_e5b_phase = 0;
+
+    /* E5b/7Q currently has no receiver-code-bias state, so only its carrier
+     * enters PPP. Three independent phone data sets repeatedly reject that
+     * phase, while excluding it preserves Galileo E1/E5a and Q6 continuity.
+     * Keep an explicit opt-in for testing a future calibrated E5b model. */
+    if (opt && (p = strstr(opt->pppopt, "-GALE5BPHASE="))) {
+        if (sscanf(p, "-GALE5BPHASE=%d", &gal_e5b_phase) != 1)
+            gal_e5b_phase = 0;
+    }
+    if (!gal_e5b_phase && sys == SYS_GAL && frq == 1 && obs &&
+        !strcmp(obs, "7Q")) return 0;
+    if (frq < 3) return 1;
+    return frq == 3 && sys == SYS_CMP && obs && !strcmp(obs, "1P");
 }
 
 /* forward declaration: ambiguity initialization uses the same ionosphere model
@@ -521,7 +549,7 @@ extern int pppoutstat(rtk_t* rtk, char* buff)
     /* receiver code biases (m), relative to each constellation reference */
     if (ND(&rtk->opt) > 0) {
         static const char *name[NIFB_PPP] = {
-            "GPS_C5Q", "GAL_C5Q", "BDS_C7I", "BDS_C5P"
+            "GPS_C5Q", "GAL_C5Q", "BDS_C7I", "BDS_C5P", "BDS_C1P"
         };
 
         for (i = 0; i < ND(&rtk->opt) && i < NIFB_PPP; i++) {
@@ -906,6 +934,12 @@ static void corr_meas(const obsd_t* obs, const nav_t* nav, const double* azel,
             }
             else {
                 frq = i;
+                /* There is no legacy B1C DCB slot. Without a current C1P
+                 * OSB, retain its carrier but never use uncalibrated code. */
+                if (sys == SYS_CMP && frq == 3) {
+                    P[i] = 0.0;
+                    continue;
+                }
                 if (frq >= MAX_CODE_BIAS_FREQS) continue;
                 bias_ix = code2bias_ix(sys, obs->code[i]);
                 if (bias_ix > 0 && bias_ix <= MAX_CODE_BIASES) {
@@ -1034,6 +1068,9 @@ static int uddoppsm_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         for (f = 0; f < rtk->opt.nf && f < NFREQ; f++) {
             ssat_t *ssat = rtk->ssat + sat - 1;
 
+            if (!ppp_signal_supported(satsys(sat, NULL), f,
+                                      obs[i].code[f], &rtk->opt)) continue;
+
             freq = sat2freq(sat, obs[i].code[f], nav);
             if (obs[i].P[f] == 0.0 || freq == 0.0 ||
                 fabs(obs[i].D[f]) > 20000.0 ||
@@ -1155,6 +1192,8 @@ static void detslp_ll(rtk_t* rtk, const obsd_t* obs, int n)
     for (i = 0; i < n && i < MAXOBS; i++) for (j = 0; j < nf; j++) {
         ssat_t *ss = &rtk->ssat[obs[i].sat - 1];
         int half_invalid, slip;
+        if (!ppp_signal_supported(satsys(obs[i].sat, NULL), j,
+                                  obs[i].code[j], &rtk->opt)) continue;
         if (obs[i].L[j] == 0.0) continue;
 
         half_invalid = (obs[i].LLI[j] & LLI_HALFC) != 0;
@@ -1184,6 +1223,8 @@ static void detslp_gf(rtk_t* rtk, const obsd_t* obs, int n, const nav_t* nav)
     for (i = 0; i < n && i < MAXOBS; i++) {
         sat = obs[i].sat;
         for (f = 1; f < rtk->opt.nf && f < NFREQ; f++) {
+            if (!ppp_signal_supported(satsys(sat, NULL), f,
+                                      obs[i].code[f], &rtk->opt)) continue;
             if ((g1 = gfmeas(obs + i, nav, f)) == 0.0) continue;
             g0 = rtk->ssat[sat - 1].gf[f - 1];
             rtk->ssat[sat - 1].gf[f - 1] = g1;
@@ -1229,6 +1270,8 @@ static void detslp_mw(rtk_t* rtk, const obsd_t* obs, int n, const nav_t* nav)
         if (sat < 1 || sat > MAXSAT) continue;
         for (f = 1; f < rtk->opt.nf && f < NFREQ; f++) {
             ssat_t *ss = rtk->ssat + sat - 1;
+            if (!ppp_signal_supported(satsys(sat, NULL), f,
+                                      obs[i].code[f], &rtk->opt)) continue;
             if (ss->ppp_code_bad[0] || ss->ppp_code_bad[f]) continue;
             if ((g1 = mwmeas(obs + i, nav, f)) == 0.0) continue;
             g0 = ss->mw[f - 1];
@@ -1296,6 +1339,9 @@ static void precheck_obs_ppp(rtk_t *rtk, const obsd_t *obs, int n,
             for (f = 0; f < rtk->opt.nf && f < NFREQ; f++) {
                 ssat_t *ss = rtk->ssat + sat - 1;
                 double freq, lambda, dt, avgd, innov;
+
+                if (!ppp_signal_supported(sys, f, obs[i].code[f],
+                                          &rtk->opt)) continue;
 
                 freq = sat2freq(sat, obs[i].code[f], nav);
                 if (freq == 0.0 || obs[i].D[f] == 0.0 ||
@@ -1765,9 +1811,12 @@ static void udbias_ppp(rtk_t* rtk, const obsd_t* obs, int n, const nav_t* nav)
 
         for (i = k = 0; i < n && i < MAXOBS; i++) {
             sat = obs[i].sat;
+            bias[i] = 0.0;
+            slip[i] = 0;
+            if (!ppp_signal_supported(satsys(sat, NULL), f,
+                                      obs[i].code[f], &rtk->opt)) continue;
             if (ppp_phase_quarantined(&rtk->ssat[sat - 1], f, obs[i].time)) continue;
             j = IB(sat, f, &rtk->opt);
-            bias[i] = 0.0;
             slip[i] = rtk->ssat[sat - 1].slip[f] & LLI_SLIP;
 
             if (j < 0 || j >= rtk->nx) {
@@ -2260,6 +2309,8 @@ static int ppp_res(int post, const obsd_t* obs, int n, const double* rs,
             dcb = bias = 0.0;
             code = j % 2; /* 0=phase, 1=code */
             frq = j / 2;
+
+            if (!ppp_signal_supported(sys, frq, obs[i].code[frq], opt)) continue;
 
             if (code && frq < NFREQ &&
                 rtk->ssat[sat - 1].ppp_code_bad[frq]) continue;

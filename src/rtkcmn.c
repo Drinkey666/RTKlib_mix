@@ -267,13 +267,13 @@ static char *obscodes[MAXCODE + 1]={       /* observation code strings */
     "6P"
 };
 static char codepris[7][MAXFREQ][16]={  /* code priority for each freq-index */
-    /* L1/E1/B1 L2/E5b/B2b L5/E5a/B2a E6/LEX/B3 E5(a+b)         */
+    /* L1/E1/B1 L2/E5b/B2b L5/E5a/B2a E6/LEX/B1C E5(a+b)/B3      */
     {"CPYWMNSLX","CPYWMNDLSX","IQX"    ,""       ,""        ,""}, /* GPS */
     {"CPABX"   ,"CPABX"     ,"IQX"     ,""       ,""        ,""}, /* GLO */
     {"CABXZ"   ,"XIQ"       ,"XIQ"     ,"ABCXZ"  ,"IQX"     ,""}, /* GAL */
     {"CLSXZBE" ,"LSX"       ,"IQXDPZ"  ,"LSXEZ"  ,""        ,""}, /* QZS */
     {"C"       ,"IQX"       ,""        ,""       ,""        ,""}, /* SBS */
-    {"IQX"     ,"IQXDPZ"    ,"DPX"     ,"IQXDPZA","DPXSLZAN","DPX"}, /* BDS */
+    {"IQX"     ,"IQXDPZ"    ,"DPX"     ,"DPXSLZAN","IQXDPZA","DPX"}, /* BDS */
     {"ABCX"    ,"ABCX"      ,"DPX"     ,""       ,""        ,""}  /* IRN */
 };
 static fatalfunc_t *fatalfunc=NULL; /* fatal callback function */
@@ -686,8 +686,8 @@ static int code2freq_BDS(uint8_t code, double *freq)
         case '2': *freq=FREQ1_CMP; return 0; /* B1I */
         case '7': *freq=FREQ2_CMP; return 1; /* B2,B2b */
         case '5': *freq=FREQL5;    return 2; /* B2a */
-        case '6': *freq=FREQ3_CMP; return 3; /* B3 */
-        case '1': *freq=FREQL1;    return 4; /* B1C,B1A */
+        case '1': *freq=FREQL1;    return 3; /* B1C,B1A */
+        case '6': *freq=FREQ3_CMP; return 4; /* B3 */
         case '8': *freq=FREQE5ab;  return 5; /* B2ab */
     }
     return -1;
@@ -716,7 +716,7 @@ static int code2freq_IRN(uint8_t code, double *freq)
 *            Galileo   E1    E5b   E5a   E6   E5ab    -
 *            QZSS      L1    L2    L5    L6     -     -
 *            SBAS      L1     -    L5     -     -     -
-*            BDS       B1    B2b   B2a   B3   B1C   B2ab
+*            BDS       B1    B2b   B2a   B1C   B3   B2ab
 *            NavIC     L5     S    L1     -     -     -
 *-----------------------------------------------------------------------------*/
 extern int code2idx(int sys, uint8_t code)
@@ -2573,12 +2573,23 @@ static int readantex(const char *file, pcvs_t *pcvs)
             if (!str2time(buff,0,43,&pcv.te)) continue;
         }
         else if (strstr(buff+60,"START OF FREQUENCY")) {
+            freq=0;
             if (!pcv.sat&&buff[3]!='G') continue; /* only read rec ant for GPS */
             if (sscanf(buff+4,"%d",&f)<1) continue;
-            for (i=0;freqs[i];i++) if (freqs[i]==f) break;
-            if (freqs[i]) freq=i+1;
-            /* for Galileo E5b: save to E2, not E7  */
-            if (satsys(pcv.sat,NULL)==SYS_GAL&&f==7) freq=2;
+            if (satsys(pcv.sat,NULL)==SYS_CMP) {
+                /* ANTEX C02=B1I, C07=B2b, C05=B2a, C01=B1C.
+                 * Numeric ANTEX IDs are not RTKLIB array indices. */
+                if      (f==2) freq=1;
+                else if (f==7) freq=2;
+                else if (f==5) freq=3;
+                else if (f==1) freq=4;
+            }
+            else {
+                for (i=0;freqs[i];i++) if (freqs[i]==f) break;
+                if (freqs[i]) freq=i+1;
+                /* for Galileo E5b: save to E2, not E7 */
+                if (satsys(pcv.sat,NULL)==SYS_GAL&&f==7) freq=2;
+            }
         }
         else if (strstr(buff+60,"END OF FREQUENCY")) {
             freq=0;

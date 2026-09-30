@@ -127,9 +127,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\src\smartphone_ppp_config.h" />
     <ClInclude Include="..\src\rtklib.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\src\smartphone_ppp_config.c" />
     <ClCompile Include="..\src\convgpx.c" />
     <ClCompile Include="..\src\convkml.c" />
     <ClCompile Include="..\src\convrnx.c" />

@@ -2,6 +2,7 @@
  * but observation records never pass through the RINEX OBS reader. */
 #include "gnss_adapter.h"
 #include "gnss_signal_policy.h"
+#include "smartphone_ppp_config.h"
 #include <windows.h>
 #include <ctype.h>
 #include <math.h>
@@ -266,31 +267,6 @@ static void normalize_clock(clock_history_t *h, android_clock_t *c)
     h->hcdc = c->hardware_clock_discontinuity_count;
     h->have_previous = 1;
     c->clock_correction_nanos = h->correction_nanos;
-}
-
-static void configure_ppp(prcopt_t *opt)
-{
-    *opt = prcopt_default;
-    opt->mode = PMODE_PPP_STATIC;
-    opt->dynamics = 0;
-    opt->navsys = SYS_GPS | SYS_GAL | SYS_CMP;
-    opt->nf = 3;
-    opt->sateph = EPHOPT_PREC;
-    opt->ionoopt = IONOOPT_EST;
-    opt->tropopt = TROPOPT_EST;
-    opt->err[1] = 0.008; opt->err[2] = 0.012;
-    opt->eratio[0] = 100.0; opt->eratio[1] = 70.0; opt->eratio[2] = 60.0;
-    opt->modear = ARMODE_OFF;
-    opt->thresslip = 0.20;
-    opt->elmin = 15.0 * D2R;
-    opt->prn[0] = 1e-4; opt->prn[1] = 1e-3; opt->prn[2] = 1e-4;
-    opt->maxout = 30;
-    opt->tidecorr = 1;
-    opt->posopt[0] = 1; opt->posopt[1] = 0;
-    opt->posopt[2] = 1; opt->posopt[3] = 1;
-    opt->snrmask.ena[0] = 0;
-    strcpy(opt->pppopt,
-        "-GAP_RESION=120 -IONCONS=1.5 -IONCONSINT=1 -VMF3SIG=0.15 -VMF3ZWDSIG=0.30 -VMF3ZWDINT=300 -DOPPSM=0.90 -DOPPWARM=10 -PREPROC=1 -DOPPSLIP=0.50 -CODEJUMP=30 -MWTHRES=5 -BDSCODEVAR=1 -BDSCODEWARM=120 -WGTELCN=0 -PPPDIAG=1 -PPPQUAR=3,120");
 }
 
 static void free_products(nav_t *nav)
@@ -984,9 +960,10 @@ int main(int argc, char **argv)
     nav = (nav_t *)calloc(1, sizeof(nav_t));
     rtk = (rtk_t *)calloc(1, sizeof(rtk_t));
     if (!nav || !rtk) { fprintf(stderr, "Out of memory\n"); goto done; }
-    configure_ppp(&opt);
+    smartphone_ppp_configure(&opt, NULL);
     traceopen(args.trace);
     tracelevel(args.trace_level);
+    smartphone_ppp_log("pc-replay", &opt);
     if (!load_products(&args, nav, &opt)) {
         fprintf(stderr, "Product loading failed; no PPP run attempted.\n"); goto done;
     }
