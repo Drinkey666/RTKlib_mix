@@ -1186,6 +1186,13 @@ typedef struct {        /* RINEX options type */
     int nobs[RNX_NUMSYS]; /* number of obs types {GPS,GLO,GAL,QZS,SBS,CMP,IRN} */
 } rnxopt_t;
 
+/* Causal residual-quality history, not an additional Kalman filter state.
+ * Stored per active actual signal and separately for phase/code. */
+typedef struct {
+    gtime_t time, bad_since, good_since;
+    uint8_t bad_count, good_count, weak;
+} ppp_signal_quality_t;
+
 typedef struct {        /* satellite status type */
     uint8_t sys;        /* navigation system */
     uint8_t vs;         /* valid satellite flag single */
@@ -1214,6 +1221,11 @@ typedef struct {        /* satellite status type */
     double psmP[NFREQ];
     float  psmD[NFREQ];
     uint8_t psmvalid[NFREQ];
+    /* Doppler smoother noise: metres^2, (metres/second)^2, and cross-covariance.
+       Separate from filter P; never assume smoothed code is temporally white. */
+    double psm_var[NFREQ], psm_rate_var[NFREQ], psm_rate_cov[NFREQ];
+    double psm_past_cov[NFREQ]; /* Cov(current smoothing error,sum of past errors) */
+    gtime_t ppp_ion_prior_time; /* last consumed IONEX information for this satellite */
     /* Per-epoch raw-code precheck result. A rejected code never enters the
        smoother, ambiguity initialization, or PPP measurement update. */
     uint8_t ppp_code_bad[NFREQ];
@@ -1227,6 +1239,7 @@ typedef struct {        /* satellite status type */
     gtime_t ppp_phase_block_until[NFREQ];
     uint8_t ppp_phase_reject_streak[NFREQ];
     uint8_t ppp_track_code[NFREQ]; /* actual RINEX code occupying each slot */
+    ppp_signal_quality_t ppp_res_quality[NFREQ][2]; /* [phase,code] */
     uint8_t ppp_phase_quar_count[NFREQ]; /* repeated bad arcs for this signal */
     gtime_t ppp_phase_good_since[NFREQ];
     /* Slowly varying corrected code-minus-phase inconsistency. A persistent
@@ -1278,6 +1291,7 @@ typedef struct {        /* RTK control/result type */
     /* PPP code/Doppler bootstrap state. These flags let PPP start with a
      * robust code-only solution, then introduce phase ambiguities cleanly. */
     gtime_t ppp_start_time;
+    gtime_t ppp_zwd_prior_time; /* last consumed VMF3 wet-prior information */
     unsigned char ppp_start_valid;
     unsigned char ppp_code_warmup;
     unsigned char ppp_phase_started;

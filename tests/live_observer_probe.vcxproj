@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\gnss_replay\gnss_replay.vcxproj" />
+  <PropertyGroup>
+    <TargetName>live_observer_probe</TargetName>
+    <OutDir>$(ProjectDir)..\build\live_observer\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)..\build\live_observer\obj\$(Configuration)\</IntDir>
+    <TargetPath>$(OutDir)$(TargetName).exe</TargetPath>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile><PreprocessorDefinitions>GNSS_REPLAY_EMBEDDED;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="live_observer_probe.c" /></ItemGroup>
+</Project>

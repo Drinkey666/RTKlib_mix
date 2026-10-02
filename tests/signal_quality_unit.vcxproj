@@ -5,9 +5,9 @@
     <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{03AF0B63-5E4A-46E5-9717-9A311979988D}</ProjectGuid>
+    <ProjectGuid>{B475F2EC-E891-4E58-865D-024932FE2001}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
-    <RootNamespace>gnss_replay</RootNamespace>
+    <RootNamespace>signal_quality_unit</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -22,6 +22,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup><OutDir>$(ProjectDir)..\gnss_replay\signal_quality_audit\bin\$(Configuration)\</OutDir><IntDir>$(ProjectDir)..\gnss_replay\signal_quality_audit\obj\$(Configuration)\</IntDir></PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>Level3</WarningLevel><ConformanceMode>true</ConformanceMode>
@@ -39,14 +40,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\src\smartphone_ppp_config.h" />
-    <ClInclude Include="..\src\gnss_replay.h" />
     <ClInclude Include="..\src\gnss_raw.h" /><ClInclude Include="..\src\gnss_adapter.h" /><ClInclude Include="..\src\gnss_signal_policy.h" /><ClInclude Include="..\src\rtklib.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\src\smartphone_ppp_config.c" />
-    <ClCompile Include="..\src\gnss_replay.c" /><ClCompile Include="..\src\gnss_adapter.c" /><ClCompile Include="..\src\gnss_signal_policy.c" />
+    <ClCompile Include="signal_quality_unit.c" /><ClCompile Include="..\src\gnss_adapter.c" /><ClCompile Include="..\src\gnss_signal_policy.c" />
     <ClCompile Include="..\src\rtkcmn.c" /><ClCompile Include="..\src\rtkpos.c" />
-    <ClCompile Include="..\src\ppp.c" /><ClCompile Include="..\src\ppp_ar.c" />
+    <ClCompile Include="..\src\ppp_ar.c" />
     <ClCompile Include="..\src\pntpos.c" /><ClCompile Include="..\src\preceph.c" />
     <ClCompile Include="..\src\rinex.c" /><ClCompile Include="..\src\ionex.c" />
     <ClCompile Include="..\src\tides.c" /><ClCompile Include="..\src\sofa.c" />
@@ -56,3 +56,5 @@
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
+
+

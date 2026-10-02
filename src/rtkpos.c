@@ -2251,6 +2251,8 @@ extern void rtkinit(rtk_t* rtk, const prcopt_t* opt)
     rtk->epoch = 0;
     rtk->ppp_start_time.time = 0;
     rtk->ppp_start_time.sec = 0.0;
+    rtk->ppp_zwd_prior_time.time = 0;
+    rtk->ppp_zwd_prior_time.sec = 0.0;
     rtk->ppp_start_valid = rtk->ppp_code_warmup = rtk->ppp_phase_started = 0;
     rtk->x = zeros(rtk->nx, 1);
     rtk->P = zeros(rtk->nx, rtk->nx);
@@ -2345,15 +2347,71 @@ extern void rtkfree(rtk_t* rtk)
 * notes  : before calling function, base station position rtk->sol.rb[] should
 *          be properly set for relative mode except for moving-baseline
 *-----------------------------------------------------------------------------*/
+/* Internal startup entry: no public structure/API changes. */
+extern int pntpos_startup(const obsd_t *obs,int n,const nav_t *nav,
+    const prcopt_t *opt,sol_t *sol,double *azel,ssat_t *ssat,char *msg);
+
+static int startup_qc_enabled(const prcopt_t *opt)
+{
+    const char *p;double pre=0.0,start=1.0;
+    if((p=strstr(opt->pppopt,"-PREPROC=")))sscanf(p+9,"%lf",&pre);
+    if((p=strstr(opt->pppopt,"-STARTQC=")))sscanf(p+9,"%lf",&start);
+    if(!isfinite(pre))pre=0.0;
+    if(!isfinite(start))start=1.0;
+    return opt->mode>=PMODE_PPP_KINEMA && pre>=0.5 && start>=0.5;
+}
+/* Only clean a private copy: missing code must not delete a valid carrier. */
+static int sanitize_ppp_input(const obsd_t *in,int n,obsd_t *out)
+{
+    int i,f,k=0;char t[40];
+    for(i=0;i<n;i++) {
+        if(in[i].rcv!=1)continue;
+        if(in[i].sat<1||in[i].sat>MAXSAT) {
+            trace(2,"$PRE_INPUT_REJECT,sat=%d,reason=SAT_ID\n",in[i].sat);continue;
+        }
+        if(k>=MAXOBS){trace(2,"$PRE_INPUT_REJECT,reason=MAXOBS\n");break;}
+        out[k]=in[i];time2str(in[i].time,t,3);
+        for(f=0;f<NFREQ+NEXOBS;f++) {
+            if(!isfinite(out[k].P[f]) || (out[k].P[f]!=0.0 &&
+                (out[k].P[f]<1E6||out[k].P[f]>1E8))) {
+                trace(2,"$PRE_INPUT_REJECT,%s,sat=%d,F%d,type=P,reason=NONFINITE_OR_RANGE\n",t,in[i].sat,f+1);
+                out[k].P[f]=0.0;
+            }
+            if(!isfinite(out[k].L[f])||fabs(out[k].L[f])>1E12) {
+                trace(2,"$PRE_INPUT_REJECT,%s,sat=%d,F%d,type=L,reason=NONFINITE_OR_RANGE\n",t,in[i].sat,f+1);
+                out[k].L[f]=0.0;out[k].LLI[f]|=LLI_SLIP;
+            }
+            if(!isfinite(out[k].D[f])||fabs(out[k].D[f])>20000.0) {
+                trace(2,"$PRE_INPUT_REJECT,%s,sat=%d,F%d,type=D,reason=NONFINITE_OR_RANGE\n",t,in[i].sat,f+1);
+                out[k].D[f]=0.0;
+            }
+        }
+        k++;
+    }
+    return k;
+}
 extern int rtkpos(rtk_t* rtk, const obsd_t* obs, int n, const nav_t* nav)
 {
     prcopt_t* opt = &rtk->opt;
     sol_t solb = { {0} };
     gtime_t time;
-    int i, nu, nr;
+    int i, nu, nr, startup_qc;
+    obsd_t clean_obs[MAXOBS];
     char msg[128] = "";
 
     char tstr[40];
+    if(!obs||n<=0){rtk->sol.stat=SOLQ_NONE;return 0;}
+    startup_qc=startup_qc_enabled(opt);
+    if(startup_qc) {
+        n=sanitize_ppp_input(obs,n,clean_obs);obs=clean_obs;
+        if(n<=0){rtk->sol.stat=SOLQ_NONE;return 0;}
+        /* The timer must also run with DOPPWARM=0. Do not enable warm-up or
+         * set ppp_start_valid (used separately by the existing bias model). */
+        if(!rtk->ppp_start_time.time) {
+            rtk->ppp_start_time=obs[0].time;
+            trace(2,"$START_QC_CONFIG,window_sec=30,spp_min_dof=2,spp_abs_gate_m=30,spp_z_gate=6,spatial_min_peers=5,code_pair_min_peers=4,spatial_MAD_factor=6\n");
+        }
+    }
     /* Keep RTKLIB frequency slots unchanged (L1/L2/L5). Missing L2 data are
        handled naturally as zero observations; never rewrite const input data. */
     trace(3, "rtkpos  : time=%s n=%d\n", time2str(obs[0].time, tstr, 3), n);
@@ -2374,7 +2432,25 @@ extern int rtkpos(rtk_t* rtk, const obsd_t* obs, int n, const nav_t* nav)
     /* rover position and time by single point positioning, skip if
      position variance smaller than threshold */
     if (rtk->P[0] == 0 || rtk->P[0] > STD_PREC_VAR_THRESH) {
-        if (!pntpos(obs, nu, nav, &rtk->opt, &rtk->sol, NULL, rtk->ssat, msg)) {
+        int startup=startup_qc && (norm(rtk->x,3)<=0.0 ||
+            fabs(timediff(obs[0].time,rtk->ppp_start_time))<=30.0);
+        int spp_ok=startup ? pntpos_startup(obs,nu,nav,opt,&rtk->sol,NULL,rtk->ssat,msg) :
+            pntpos(obs,nu,nav,opt,&rtk->sol,NULL,rtk->ssat,msg);
+        if(startup_qc&&spp_ok&&norm(rtk->x,3)<=0.0&&
+            fabs(timediff(obs[0].time,rtk->ppp_start_time))>30.0) {
+            /* Clock-only/sparse callbacks before the first usable SPP must
+             * not consume the bootstrap window before PPP can initialize. */
+            rtk->ppp_start_time=obs[0].time;
+            trace(2,"$START_TIMER_RESTART,reason=FIRST_USABLE_SPP\n");
+        }
+        if(startup && spp_ok)for(i=0;i<nu;i++) {
+            int sat=obs[i].sat;
+            if(rtk->ssat[sat-1].ppp_code_bad[0]) {
+                clean_obs[i].P[0]=0.0;
+                rtk->ssat[sat-1].psmvalid[0]=0;
+            }
+        }
+        if (!spp_ok) {
             errmsg(rtk, "point pos error (%s)\n", msg);
 
             /*
@@ -2420,6 +2496,24 @@ extern int rtkpos(rtk_t* rtk, const obsd_t* obs, int n, const nav_t* nav)
     /* precise point positioning */
     if (opt->mode >= PMODE_PPP_KINEMA) {
         pppos(rtk, obs, nu, nav);
+        /* relpos() saves raw phase history, but PPP returned before that code.
+         * Enable history for the requested startup window only. Activating
+         * previously dormant steady-state tests is a separate model-quality
+         * change and must not be bundled into this startup fix. */
+        if(startup_qc)for(i=0;i<nu&&i<MAXOBS;i++) {
+            int f,sat=obs[i].sat;
+            for(f=0;f<opt->nf&&f<NFREQ;f++) {
+                if(fabs(timediff(obs[i].time,rtk->ppp_start_time))<=30.0) {
+                    rtk->ssat[sat-1].pt[0][f]=obs[i].time;
+                    rtk->ssat[sat-1].ph[0][f]=isfinite(obs[i].L[f])?obs[i].L[f]:0.0;
+                }
+                else {
+                    rtk->ssat[sat-1].pt[0][f].time=0;
+                    rtk->ssat[sat-1].pt[0][f].sec=0.0;
+                    rtk->ssat[sat-1].ph[0][f]=0.0;
+                }
+            }
+        }
         outsolstat(rtk, nav);
         return 1;
     }

@@ -3,6 +3,7 @@
 #include "gnss_adapter.h"
 #include "gnss_signal_policy.h"
 #include "smartphone_ppp_config.h"
+#include "gnss_replay.h"
 #include <windows.h>
 #include <ctype.h>
 #include <math.h>
@@ -14,6 +15,14 @@
 #define CSV_COLS 80
 #define LINE_SIZE 8192
 #define NS_CLOCK_JUMP 50000LL
+
+/* Observer lifetime is scoped to the replay worker, not a mutable filter global. */
+static __declspec(thread) const gnss_replay_observer_t *replay_observer;
+static int replay_cancelled(void)
+{
+    return replay_observer && replay_observer->cancelled &&
+           replay_observer->cancelled(replay_observer->context);
+}
 
 typedef struct {
     const char *txt, *nav, *sp3, *clk, *bia, *ionex;
@@ -72,12 +81,13 @@ static double monotonic_ms(void)
     return (double)counter.QuadPart * 1000.0 / (double)freq.QuadPart;
 }
 
-static void wait_until(double deadline_ms)
+static int wait_until(double deadline_ms)
 {
     for (;;) {
         double remaining = deadline_ms - monotonic_ms();
-        if (remaining <= 0.0) return;
-        if (remaining > 3.0) Sleep((DWORD)(remaining - 2.0));
+        if (replay_cancelled()) return 0;
+        if (remaining <= 0.0) return 1;
+        if (remaining > 3.0) Sleep((DWORD)fmin(remaining - 2.0, 50.0));
         else SwitchToThread();
     }
 }
@@ -780,6 +790,7 @@ static int solve_obs_epoch(const obsd_t *obs, int nobs, double adapter_ms,
     double t0, elapsed, pos[3] = {0}, target_ms = 0.0;
     int week, status, i, f;
     double tow;
+    if (replay_cancelled()) return -2;
     if (!nobs) return 0;
     for (i = 0; i < nobs; i++) for (f = 0; f < NFREQ; f++) {
         if (obs[i].P[f]) perf->code_meas++;
@@ -799,7 +810,7 @@ static int solve_obs_epoch(const obsd_t *obs, int nobs, double adapter_ms,
     }
     if (realtime) {
         target_ms = *first_ms + timediff(obs[0].time, *first_time) * 1000.0;
-        wait_until(target_ms);
+        if (!wait_until(target_ms)) return -2;
     }
     if (dump) dump_obs(dump, obs, nobs);
     if (rnx) compare_epoch(obs, nobs, rnx, rnx_cursor, comparison,
@@ -855,6 +866,17 @@ static int solve_obs_epoch(const obsd_t *obs, int nobs, double adapter_ms,
             rtk->ssat[sat - 1].vsat[f] != 0,
             rtk->ssat[sat - 1].resp[f], rtk->ssat[sat - 1].resc[f], elapsed);
     }
+    if (replay_observer && replay_observer->epoch) {
+        gnss_replay_epoch_t snapshot;
+        snapshot.time = obs[0].time;
+        snapshot.solution = rtk->sol;
+        snapshot.nobs = nobs;
+        snapshot.processing_ms = elapsed;
+        /* Stream records are committed before notifying the display. */
+        if (result_file) fflush(result_file);
+        if (state_dump) fflush(state_dump);
+        replay_observer->epoch(replay_observer->context, &snapshot);
+    }
     return 1;
 }
 
@@ -886,7 +908,7 @@ static int process_txt_epoch(const android_clock_t *clock,
             }
             /* Release the original Android epoch at its GNSS-time target,
              * then run the unchanged adapter and one rtkpos() call. */
-            wait_until(*first_ms + timediff(epoch_time, *first_time) * 1000.0);
+            if (!wait_until(*first_ms + timediff(epoch_time, *first_time) * 1000.0)) return -2;
             t0 = monotonic_ms();
         }
     }
@@ -932,7 +954,8 @@ static int process_txt_epoch(const android_clock_t *clock,
                            first_time, first_ms);
 }
 
-int main(int argc, char **argv)
+int gnss_replay_run_observed(int argc, char **argv, const prcopt_t *options,
+                            const gnss_replay_observer_t *observer)
 {
     replay_args_t args;
     nav_t *nav = NULL;
@@ -957,16 +980,26 @@ int main(int argc, char **argv)
 
     if (!parse_args(argc, argv, &args)) { usage(argv[0]); return 2; }
     if (args.txt && !exists(args.txt)) return 2;
+    replay_observer = observer;
     nav = (nav_t *)calloc(1, sizeof(nav_t));
     rtk = (rtk_t *)calloc(1, sizeof(rtk_t));
     if (!nav || !rtk) { fprintf(stderr, "Out of memory\n"); goto done; }
     smartphone_ppp_configure(&opt, NULL);
+    if (options) opt = *options;
+    {
+        char error[256];
+        if (!smartphone_ppp_validate(&opt, error, sizeof(error))) {
+            fprintf(stderr, "PPP configuration error: %s\n", error);
+            goto done;
+        }
+    }
     traceopen(args.trace);
     tracelevel(args.trace_level);
     smartphone_ppp_log("pc-replay", &opt);
     if (!load_products(&args, nav, &opt)) {
         fprintf(stderr, "Product loading failed; no PPP run attempted.\n"); goto done;
     }
+    if (replay_cancelled()) goto done;
     if (!args.rinex_source && !scan_signal_products(args.txt, nav)) {
         fprintf(stderr, "SIGNAL_PRODUCT scan failed.\n"); goto done;
     }
@@ -1036,7 +1069,7 @@ int main(int argc, char **argv)
         }
     }
     else {
-        while (fgets(line, sizeof(line), input)) {
+        while (!replay_cancelled() && fgets(line, sizeof(line), input)) {
             if (!parse_raw(line, &parsed_clock, &parsed, &last_clock)) continue;
             if (nraw && parsed_clock.time_nanos != current_clock.time_nanos) {
                 int result = process_txt_epoch(&current_clock, raw, nraw, &adapter, rtk, nav,
@@ -1057,7 +1090,7 @@ int main(int argc, char **argv)
             last_clock = parsed_clock;
             if (nraw < RAW_PER_EPOCH) raw[nraw++] = parsed;
         }
-        if (nraw && (!args.max_epochs || epochs < args.max_epochs)) {
+        if (!replay_cancelled() && nraw && (!args.max_epochs || epochs < args.max_epochs)) {
             int result = process_txt_epoch(&current_clock, raw, nraw, &adapter, rtk, nav,
                                            dump, result_file, state_dump, use_dump,
                                            args.rinex ? &rinex_obs : NULL, &rnx_cursor,
@@ -1151,5 +1184,19 @@ done:
     traceclose();
     if (perf.n) fprintf(stderr, "PPP_REJECT,count=%d\n",
                         count_trace_tag(args.trace, "$PPP_REJECT,"));
+    if (replay_cancelled()) rc = 3;
+    replay_observer = NULL;
     return rc;
 }
+
+int gnss_replay_run(int argc, char **argv, const prcopt_t *options)
+{
+    return gnss_replay_run_observed(argc, argv, options, NULL);
+}
+
+#ifndef GNSS_REPLAY_EMBEDDED
+int main(int argc, char **argv)
+{
+    return gnss_replay_run(argc, argv, NULL);
+}
+#endif

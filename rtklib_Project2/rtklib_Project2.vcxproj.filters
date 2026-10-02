@@ -15,11 +15,24 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\src\pc_file_picker.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="..\src\pc_txt_replay.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="..\src\pc_live_view.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="..\src\gnss_replay.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="..\src\gnss_adapter.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="..\src\gnss_signal_policy.h"><Filter>头文件</Filter></ClInclude>
+    <ClInclude Include="..\src\gnss_raw.h"><Filter>头文件</Filter></ClInclude>
     <ClInclude Include="..\src\rtklib.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\src\pc_file_picker.c"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="..\src\pc_txt_replay.c"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="..\src\pc_live_view.c"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="..\src\gnss_replay.c"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="..\src\gnss_adapter.c"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="..\src\gnss_signal_policy.c"><Filter>源文件</Filter></ClCompile>
     <ClCompile Include="..\src\convgpx.c">
       <Filter>源文件</Filter>
     </ClCompile>

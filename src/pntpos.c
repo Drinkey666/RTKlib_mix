@@ -574,6 +574,87 @@ static int estpos(const obsd_t* obs, int n, const double* rs, const double* dts,
     free(v); free(H); free(var);
     return 0;
 }
+/* Startup-only post-fit check. The full clock/ISB design is retained; common
+ * clock jumps are therefore not mistaken for individual code outliers.
+ * Require two residual degrees of freedom and a 30 m AND 6-sigma fault.
+ * Leverage correction prevents a fitted high-leverage error hiding itself.
+ * Ordinary pntpos()/single/relative positioning are not changed. */
+static int startup_metrics(const obsd_t *obs,int n,const double *rs,
+    const double *dts,const double *vare,const int *svh,const nav_t *nav,
+    const prcopt_t *opt,const ssat_t *ssat,const sol_t *sol,
+    double *score,double *worst_z,double *worst_m,int *redundancy)
+{
+    double x[NX]={0},v[MAXOBS+NX],H[NX*(MAXOBS+NX)],var[MAXOBS+NX];
+    double azel[MAXOBS*2],resp[MAXOBS],dx[NX],Q[NX*NX],sum=0.0;
+    int used[MAXOBS]={0},i,j,k,nv,ns,row=0,candidate=-1;
+    for(i=0;i<3;i++)x[i]=sol->rr[i];
+    for(i=3;i<NX;i++)x[i]=sol->dtr[i-3]*CLIGHT;
+    nv=rescode(1,obs,n,rs,dts,vare,svh,nav,x,opt,ssat,v,H,var,azel,used,resp,&ns);
+    *score=1E99;*worst_z=*worst_m=0.0;*redundancy=nv-NX;
+    if(*redundancy<2)return -1;
+    for(i=0;i<nv;i++) {
+        double sig=sqrt(var[i]);
+        if(!isfinite(sig)||sig<=0.0||!isfinite(v[i]))return -1;
+        v[i]/=sig;sum+=v[i]*v[i];
+        for(j=0;j<NX;j++)H[j+i*NX]/=sig;
+    }
+    if(lsq(H,v,NX,nv,dx,Q))return -1;
+    *score=sum/(*redundancy);
+    for(i=0;i<n;i++)if(used[i]) {
+        double leverage=0.0,z;
+        for(j=0;j<NX;j++)for(k=0;k<NX;k++)
+            leverage+=H[j+row*NX]*Q[j+k*NX]*H[k+row*NX];
+        z=fabs(v[row])/sqrt(MAX(0.05,1.0-leverage));
+        if(fabs(resp[i])>30.0&&z>6.0&&z>*worst_z) {
+            candidate=i;*worst_z=z;*worst_m=resp[i];
+        }
+        row++;
+    }
+    return candidate;
+}
+static int startup_fde(const obsd_t *obs,int n,const double *rs,
+    const double *dts,const double *vare,const int *svh,const nav_t *nav,
+    const prcopt_t *opt,const ssat_t *ssat,sol_t *sol,double *azel,
+    int *vsat,double *resp,int initial_ok,unsigned char *rejected,char *msg)
+{
+    obsd_t trial_obs[MAXOBS],work[MAXOBS];
+    sol_t trial,best;
+    double trial_azel[MAXOBS*2],trial_resp[MAXOBS],best_azel[MAXOBS*2],best_resp[MAXOBS];
+    double score,z,metres,best_score;int i,round,dof,candidate,best_i,ok=initial_ok;
+    int trial_used[MAXOBS],best_used[MAXOBS];char trial_msg[128],t[40],sid[8];
+    memcpy(work,obs,n*sizeof(*obs));time2str(obs[0].time,t,3);
+    for(round=0;round<3;round++) {
+        candidate=ok?startup_metrics(work,n,rs,dts,vare,svh,nav,opt,ssat,sol,&score,&z,&metres,&dof):-1;
+        if(ok&&candidate<0)return 1; /* sparse geometry: do not invent evidence */
+        best_i=-1;best_score=ok?score*0.5:9.0;
+        /* A trial must actually improve a redundant fit. Evaluate all used
+         * hypotheses instead of blindly deleting the largest raw residual. */
+        for(i=0;i<n;i++) {
+            double trial_score,tz,tm;int tdof;
+            if(work[i].P[0]==0.0||(ok&&!vsat[i]))continue;
+            memcpy(trial_obs,work,n*sizeof(*obs));trial_obs[i].P[0]=0.0;
+            trial=*sol;trial.stat=SOLQ_NONE;
+            if(!estpos(trial_obs,n,rs,dts,vare,svh,nav,opt,ssat,&trial,trial_azel,trial_used,trial_resp,trial_msg))continue;
+            startup_metrics(trial_obs,n,rs,dts,vare,svh,nav,opt,ssat,&trial,&trial_score,&tz,&tm,&tdof);
+            if(tdof<2||!isfinite(trial_score)||trial_score>=best_score)continue;
+            best_score=trial_score;best_i=i;best=trial;
+            memcpy(best_azel,trial_azel,n*2*sizeof(double));
+            memcpy(best_resp,trial_resp,n*sizeof(double));memcpy(best_used,trial_used,n*sizeof(int));
+        }
+        if(best_i<0) {
+            trace(2,"$START_SPP_FAIL,%s,reason=NO_SAFE_FDE,initial_ok=%d\n",t,ok);
+            strcpy(msg,"startup gross code: no safe exclusion");sol->stat=SOLQ_NONE;return 0;
+        }
+        satno2id(work[best_i].sat,sid);
+        trace(2,"$START_SPP_REJECT,%s,sat=%s,sig=%s,res=%.3f,worst_z=%.2f,score_before=%.3f,score_after=%.3f\n",
+            t,sid,code2obs(work[best_i].code[0]),ok?resp[best_i]:0.0,ok?z:0.0,ok?score:0.0,best_score);
+        work[best_i].P[0]=0.0;rejected[best_i]=1;*sol=best;ok=1;
+        memcpy(azel,best_azel,n*2*sizeof(double));memcpy(resp,best_resp,n*sizeof(double));memcpy(vsat,best_used,n*sizeof(int));
+    }
+    candidate=startup_metrics(work,n,rs,dts,vare,svh,nav,opt,ssat,sol,&score,&z,&metres,&dof);
+    if(candidate>=0){strcpy(msg,"startup gross code: exclusion budget exhausted");sol->stat=SOLQ_NONE;return 0;}
+    return ok;
+}
 /* RAIM FDE (failure detection and exclusion) 接收机自主完好性监测-------------------------------*/
 static int raim_fde(const obsd_t *obs, int n, const double *rs,
                     const double *dts, const double *vare, const int *svh,
@@ -749,15 +830,17 @@ static void estvel(const obsd_t *obs, int n, const double *rs, const double *dts
 *          char   *msg      O   error message for error exit
 * return : status(1:ok,0:error) 总入口
 *-----------------------------------------------------------------------------*/
-extern int pntpos(const obsd_t *obs, int n, const nav_t *nav,
+static int pntpos_impl(const obsd_t *obs, int n, const nav_t *nav,
                   const prcopt_t *opt, sol_t *sol, double *azel, ssat_t *ssat,
-                  char *msg)
+                  char *msg,int startup)
 {
     prcopt_t opt_=*opt;
     double *rs,*dts,*var,*azel_,*resp;
     int i,stat,vsat[MAXOBS]={0},svh[MAXOBS];
+    unsigned char rejected[MAXOBS]={0};
     
     char tstr[40];
+    if(!obs||n<=0||n>MAXOBS){sol->stat=SOLQ_NONE;strcpy(msg,"invalid observation count");return 0;}
     trace(3,"pntpos  : tobs=%s n=%d\n",time2str(obs[0].time,tstr,3),n);
     
     sol->stat=SOLQ_NONE;
@@ -791,9 +874,10 @@ extern int pntpos(const obsd_t *obs, int n, const nav_t *nav,
     
     /* estimate receiver position and time with pseudorange */
     stat=estpos(obs,n,rs,dts,var,svh,nav,&opt_,ssat,sol,azel_,vsat,resp,msg);
+    if(startup)stat=startup_fde(obs,n,rs,dts,var,svh,nav,&opt_,ssat,sol,azel_,vsat,resp,stat,rejected,msg);
     
     /* 步骤 3：如果开启了 RAIM 且卫星数足够，执行完好性检测剔除坏星 */
-    if (!stat&&n>=6&&opt->posopt[4]) {
+    if (!startup&&!stat&&n>=6&&opt->posopt[4]) {
         stat=raim_fde(obs,n,rs,dts,var,svh,nav,&opt_,ssat,sol,azel_,vsat,resp,msg);
     }
     /* 步骤 4：位置算成功了，利用多普勒观测值估计接收机速度 */
@@ -810,6 +894,7 @@ extern int pntpos(const obsd_t *obs, int n, const nav_t *nav,
             ssat[i].resp[0]=ssat[i].resc[0]=0.0;
         }
         for (i=0;i<n;i++) {
+            if(startup)ssat[obs[i].sat-1].ppp_code_bad[0]=rejected[i];
             ssat[obs[i].sat-1].azel[0]=azel_[  i*2];
             ssat[obs[i].sat-1].azel[1]=azel_[1+i*2];
             if (!vsat[i]) continue;
@@ -820,3 +905,9 @@ extern int pntpos(const obsd_t *obs, int n, const nav_t *nav,
     free(rs); free(dts); free(var); free(azel_); free(resp);
     return stat;
 }
+extern int pntpos(const obsd_t *obs,int n,const nav_t *nav,const prcopt_t *opt,
+    sol_t *sol,double *azel,ssat_t *ssat,char *msg)
+{ return pntpos_impl(obs,n,nav,opt,sol,azel,ssat,msg,0); }
+extern int pntpos_startup(const obsd_t *obs,int n,const nav_t *nav,const prcopt_t *opt,
+    sol_t *sol,double *azel,ssat_t *ssat,char *msg)
+{ return pntpos_impl(obs,n,nav,opt,sol,azel,ssat,msg,1); }
